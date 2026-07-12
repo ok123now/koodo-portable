@@ -4,7 +4,6 @@ import { sideMenu } from "../../constants/sideMenu";
 import { SidebarProps, SidebarState } from "./interface";
 import { withRouter } from "react-router-dom";
 import { ConfigService } from "../../assets/lib/kookit-extra-browser.min";
-import { getWebsiteUrl, openInBrowser } from "../../utils/common";
 import { Trans } from "react-i18next";
 import toast from "react-hot-toast";
 import {
@@ -79,9 +78,6 @@ class Sidebar extends React.Component<SidebarProps, SidebarState> {
     this.setState({ isCollapsed });
     this.props.handleCollapse(isCollapsed);
     ConfigService.setReaderConfig("isCollapsed", isCollapsed ? "yes" : "no");
-  };
-  handleJump = (url: string) => {
-    openInBrowser(url);
   };
   handleCreateShelf = () => {
     if (!this.state.newShelfName) {
@@ -390,21 +386,10 @@ class Sidebar extends React.Component<SidebarProps, SidebarState> {
               ConfigService.getReaderConfig("appSkin") === "night" ||
               (ConfigService.getReaderConfig("appSkin") === "system" &&
                 ConfigService.getReaderConfig("isOSNight") === "yes")
-                ? require(
-                    `../../assets/images/logo-dark${
-                      this.props.isAuthed ? "-pro" : ""
-                    }.png`
-                  )
-                : require(
-                    `../../assets/images/logo-light${
-                      this.props.isAuthed ? "-pro" : ""
-                    }.png`
-                  )
+                ? require("../../assets/images/logo-dark.png")
+                : require("../../assets/images/logo-light.png")
             }
             alt=""
-            onClick={() => {
-              this.handleJump(getWebsiteUrl());
-            }}
             style={this.state.isCollapsed ? { display: "none" } : {}}
             className="logo"
           />

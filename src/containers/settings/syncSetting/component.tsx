@@ -4,20 +4,13 @@ import { Trans } from "react-i18next";
 import i18n from "../../../i18n";
 import { removeCloudConfig } from "../../../utils/file/common";
 import { isElectron } from "react-device-detect";
-import _ from "underscore";
 import { syncSettingList } from "../../../constants/settingList";
 
 import toast from "react-hot-toast";
 import {
   confirmBrowserExtensionAsync,
   generateSyncRecord,
-  getICloudDrivePath,
-  getServerRegion,
-  getWebsiteUrl,
   handleContextMenu,
-  openExternalUrl,
-  openInBrowser,
-  resetKoodoSync,
   showTaskProgress,
   testConnection,
   testCORS,
@@ -29,31 +22,29 @@ import { backup } from "../../../utils/file/backup";
 import { restore } from "../../../utils/file/restore";
 import {
   ConfigService,
-  KookitConfig,
   SyncHelper,
-  SyncUtil,
   TokenService,
 } from "../../../assets/lib/kookit-extra-browser.min";
-import {
-  encryptToken,
-  onSyncCallback,
-} from "../../../utils/request/thirdparty";
 import SyncService from "../../../utils/storage/syncService";
-import { updateUserConfig } from "../../../utils/request/user";
 import BookUtil from "../../../utils/file/bookUtil";
 import Book from "../../../models/Book";
-import ConfigUtil from "../../../utils/file/configUtil";
+import {
+  CredentialVaultLockedError,
+  deleteDataSourceCredential,
+  getDataSourceCredential,
+  setDataSourceCredential,
+  unlockCredentialVault,
+} from "../../../utils/storage/credentialVault";
 declare var window: any;
 class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
   constructor(props: SettingInfoProps) {
     super(props);
     this.state = {
       isKeepLocal: ConfigService.getReaderConfig("isKeepLocal") === "yes",
+      isEnableKoodoSync: false,
       autoOffline: ConfigService.getReaderConfig("autoOffline") === "yes",
       isDisableAutoSync:
         ConfigService.getReaderConfig("isDisableAutoSync") === "yes",
-      isEnableKoodoSync:
-        ConfigService.getReaderConfig("isEnableKoodoSync") === "yes",
       hideSyncProgress:
         ConfigService.getReaderConfig("hideSyncProgress") === "yes",
       driveConfig: {},
@@ -62,14 +53,31 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       backupDrive: "",
       restoreDrive: "",
       showDefaultSyncAddGrid: false,
+      vaultPassphrase: "",
     };
   }
 
   handleRest = (_bool: boolean) => {
     toast.success(this.props.t("Change successful"));
   };
-  handleJump = (url: string) => {
-    openInBrowser(url);
+  handleUnlockVault = async () => {
+    if (!this.state.vaultPassphrase) {
+      toast.error(this.props.t("Enter a passphrase to unlock the local credential vault"));
+      return;
+    }
+    try {
+      const result = await unlockCredentialVault(this.state.vaultPassphrase);
+      this.setState({ vaultPassphrase: "" });
+      toast.success(
+        this.props.t(result?.created ? "Local credential vault created" : "Local credential vault unlocked")
+      );
+    } catch (error) {
+      toast.error(
+        this.props.t(
+          "Unable to unlock the local credential vault. Check the passphrase and try again"
+        )
+      );
+    }
   };
   handleSetting = (stateName: string) => {
     this.setState({ [stateName]: !this.state[stateName] } as any);
@@ -103,12 +111,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       );
       return;
     }
-    if (!this.props.isAuthed) {
-      toast(this.props.t("Please upgrade to Pro to use this feature"));
-      this.props.handleSetting(true);
-      this.props.handleSettingMode("account");
-      return;
-    }
     if (
       !isElectron &&
       driveList.find((item) => item.value === targetDrive)?.needExtension
@@ -117,94 +119,23 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
         return;
       }
     }
-    if (
-      driveList.find((item) => item.value === targetDrive)?.isPro &&
-      !this.props.isAuthed
-    ) {
-      toast(this.props.t("Please upgrade to Pro to use this feature"));
-      this.props.handleSetting(true);
-      this.props.handleSettingMode("account");
-      return;
-    }
     this.props.handleSettingDrive(targetDrive);
-    let settingDrive = targetDrive;
-    if (settingDrive === "icloud") {
-      let drivePath = getICloudDrivePath();
-      if (!drivePath) {
-        toast.error(
-          this.props.t(
-            "Can't find Koodo Reader's folder in the default iCloud path, please make sure iCloud Drive is installed and set up correctly, and you have already synced your library to iCloud Drive on the iOS version first."
-          ),
-          {
-            duration: 6000,
-          }
-        );
-        this.props.handleSettingDrive("");
-        return;
-      }
-      toast.loading(i18n.t("Adding"), { id: "adding-sync-id" });
-      let res = await encryptToken(settingDrive, {
-        iCloudDrivePath: drivePath,
-      });
-      if (res.code === 200) {
-        toast.success(i18n.t("Binding successful"), { id: "adding-sync-id" });
-      } else {
-        toast.error(i18n.t("Binding failed"), { id: "adding-sync-id" });
-        this.props.handleSettingDrive("");
-        return;
-      }
-      SyncService.removeSyncUtil(settingDrive);
-      removeCloudConfig(settingDrive);
-      if (isElectron) {
-        const { ipcRenderer } = window.require("electron");
-        await ipcRenderer.invoke("cloud-close", {
-          service: settingDrive,
-        });
-      }
-      ConfigService.setListConfig(settingDrive, "dataSourceList");
-      toast.success(i18n.t("Binding successful"), { id: "adding-sync-id" });
-      if (this.props.isAuthed && !ConfigService.getItem("defaultSyncOption")) {
-        ConfigService.setItem("defaultSyncOption", settingDrive);
-        if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
-          resetKoodoSync();
-        }
-        this.props.handleFetchDefaultSyncOption();
-      }
-      this.props.handleFetchDataSourceList();
-      this.props.handleSettingDrive("");
-      return;
-    }
-    if (
-      settingDrive === "dropbox" ||
-      settingDrive === "yandex" ||
-      settingDrive === "dubox" ||
-      settingDrive === "yiyiwu" ||
-      settingDrive === "google" ||
-      settingDrive === "boxnet" ||
-      settingDrive === "pcloud" ||
-      settingDrive === "adrive" ||
-      settingDrive === "microsoft_exp" ||
-      settingDrive === "microsoft"
-    ) {
-      this.handleJump(
-        new SyncUtil(settingDrive, {}).getAuthUrl(
-          getServerRegion() === "china" &&
-            (settingDrive === "microsoft" ||
-              settingDrive === "microsoft_exp" ||
-              settingDrive === "dubox" ||
-              settingDrive === "yiyiwu" ||
-              settingDrive === "adrive")
-            ? KookitConfig.ThirdpartyConfig.cnCallbackUrl
-            : KookitConfig.ThirdpartyConfig.callbackUrl
-        )
-      );
-    }
   };
   handleDeleteDataSource = async (event: any) => {
     let targetDrive = event.target.value;
     if (!targetDrive) {
       return;
     }
+    try {
+      await deleteDataSourceCredential(targetDrive);
+    } catch (error) {
+      if (error instanceof CredentialVaultLockedError) {
+        toast.error(this.props.t("Unlock the local credential vault before changing data sources"));
+        return;
+      }
+      throw error;
+    }
+    ConfigService.removeItem(`credentialRef:${targetDrive}`);
     await TokenService.setToken(targetDrive + "_token", "");
     SyncService.removeSyncUtil(targetDrive);
     removeCloudConfig(targetDrive);
@@ -219,9 +150,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     if (targetDrive === ConfigService.getItem("defaultSyncOption")) {
       ConfigService.removeItem("defaultSyncOption");
       this.props.handleFetchDefaultSyncOption();
-      if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
-        resetKoodoSync();
-      }
     }
     toast.success(this.props.t("Deletion successful"));
   };
@@ -229,32 +157,9 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     if (!newValue) {
       return;
     }
-    if (!this.props.isAuthed) {
-      toast(this.props.t("Please upgrade to Pro to use this feature"));
-      this.props.handleSetting(true);
-      this.props.handleSettingMode("account");
-      return;
-    }
-
     ConfigService.setItem("defaultSyncOption", newValue);
-    if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
-      resetKoodoSync();
-    }
     this.props.handleFetchDefaultSyncOption();
     toast.success(this.props.t("Change successful"));
-    if (
-      !(await ConfigUtil.isCloudEmpty()) &&
-      ConfigService.getReaderConfig("isEnableKoodoSync") === "yes"
-    ) {
-      toast(
-        this.props.t(
-          "This data source already contains a library. If you need to merge local and cloud data, please turn off Koodo Sync and resync."
-        ),
-        {
-          duration: 10000,
-        }
-      );
-    }
   };
   handleSelectBackupOrRestoreSource = async (
     event: any,
@@ -286,15 +191,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       );
       return;
     }
-    if (
-      driveList.find((item) => item.value === targetDrive)?.isPro &&
-      !this.props.isAuthed
-    ) {
-      toast(this.props.t("Please upgrade to Pro to use this feature"));
-      this.props.handleSetting(true);
-      this.props.handleSettingMode("account");
-      return;
-    }
     this.setState({
       backupDrive: mode === "backup" ? targetDrive : this.state.backupDrive,
       restoreDrive: mode === "restore" ? targetDrive : this.state.restoreDrive,
@@ -303,6 +199,18 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       this.handleBackupLibrary(targetDrive);
     } else {
       this.handleRestoreLibrary(targetDrive);
+    }
+  };
+  hasDataSourceCredential = async (service: string) => {
+    try {
+      return Boolean(await getDataSourceCredential(service));
+    } catch (error) {
+      toast.error(
+        error instanceof CredentialVaultLockedError
+          ? this.props.t("Unlock the local credential vault before using this data source")
+          : this.props.t("Cannot read local data-source credentials")
+      );
+      return false;
     }
   };
   handleBackupLibrary = async (name: string) => {
@@ -322,7 +230,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       }
       return;
     }
-    if (!(await TokenService.getToken(name + "_token"))) {
+    if (!(await this.hasDataSourceCredential(name))) {
       this.props.handleTokenDialog(true);
       return;
     }
@@ -364,7 +272,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       }
       return;
     }
-    if (!(await TokenService.getToken(name + "_token"))) {
+    if (!(await this.hasDataSourceCredential(name))) {
       this.props.handleTokenDialog(true);
       return;
     }
@@ -404,31 +312,25 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     if (!flag) {
       return;
     }
-    if (
-      this.props.settingDrive === "webdav" ||
-      this.props.settingDrive === "docker" ||
-      this.props.settingDrive === "ftp" ||
-      this.props.settingDrive === "sftp" ||
-      this.props.settingDrive === "mega" ||
-      this.props.settingDrive === "s3compatible"
-    ) {
-      toast.loading(i18n.t("Adding"), { id: "adding-sync-id" });
-      let res = await encryptToken(
-        this.props.settingDrive,
-        this.state.driveConfig
+    toast.loading(i18n.t("Adding"), { id: "adding-sync-id" });
+    try {
+      await setDataSourceCredential(this.props.settingDrive, this.state.driveConfig);
+    } catch (error) {
+      toast.error(
+        error instanceof CredentialVaultLockedError
+          ? this.props.t("Unlock the local credential vault before adding a data source")
+          : this.props.t("Binding failed"),
+        { id: "adding-sync-id" }
       );
-      if (res.code === 200) {
-        ConfigService.setListConfig(this.props.settingDrive, "dataSourceList");
-        toast.success(i18n.t("Binding successful"), { id: "adding-sync-id" });
-      } else {
-        toast.error(i18n.t("Binding failed"), { id: "adding-sync-id" });
-      }
-    } else {
-      await onSyncCallback(
-        this.props.settingDrive,
-        this.state.driveConfig.token
-      );
+      return;
     }
+    ConfigService.setItem(
+      `credentialRef:${this.props.settingDrive}`,
+      `datasource:${this.props.settingDrive}`
+    );
+    await TokenService.setToken(this.props.settingDrive + "_token", "");
+    ConfigService.setListConfig(this.props.settingDrive, "dataSourceList");
+    toast.success(i18n.t("Binding successful"), { id: "adding-sync-id" });
     SyncService.removeSyncUtil(this.props.settingDrive);
     removeCloudConfig(this.props.settingDrive);
     if (isElectron) {
@@ -437,11 +339,8 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
         service: this.props.settingDrive,
       });
     }
-    if (this.props.isAuthed && !ConfigService.getItem("defaultSyncOption")) {
+    if (!ConfigService.getItem("defaultSyncOption")) {
       ConfigService.setItem("defaultSyncOption", this.props.settingDrive);
-      if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
-        resetKoodoSync();
-      }
       this.props.handleFetchDefaultSyncOption();
     }
     this.props.handleFetchDataSourceList();
@@ -464,26 +363,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               className="single-control-switch"
               onClick={async () => {
                 switch (item.propName) {
-                  case "isEnableKoodoSync":
-                    this.handleSetting(item.propName);
-                    let encryptToken = await TokenService.getToken(
-                      this.props.defaultSyncOption + "_token"
-                    );
-                    await updateUserConfig({
-                      is_enable_koodo_sync:
-                        ConfigService.getReaderConfig("isEnableKoodoSync"),
-                      default_sync_option: this.props.defaultSyncOption,
-                      default_sync_token: encryptToken || "",
-                    });
-                    let userInfo = await this.props.handleFetchUserInfo();
-                    if (
-                      ConfigService.getReaderConfig("isEnableKoodoSync") ===
-                      "yes"
-                    ) {
-                      this.props.cloudSyncFunc(userInfo);
-                    }
-
-                    break;
                   case "autoOffline":
                     this.handleSetting(item.propName);
                     if (!this.state.autoOffline) {
@@ -555,6 +434,39 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     const { showDefaultSyncAddGrid } = this.state;
     return (
       <>
+        {isElectron && (
+          <div className="setting-dialog-new-title">
+            <Trans>Local credential vault</Trans>
+            <span style={{ display: "flex", gap: "8px" }}>
+              <input
+                type="password"
+                className="token-dialog-username-box"
+                style={{ width: "170px" }}
+                value={this.state.vaultPassphrase}
+                placeholder={this.props.t("Passphrase")}
+                onChange={(event) =>
+                  this.setState({ vaultPassphrase: event.target.value })
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") this.handleUnlockVault();
+                }}
+              />
+              <span
+                className="change-location-button"
+                onClick={this.handleUnlockVault}
+              >
+                <Trans>Unlock</Trans>
+              </span>
+            </span>
+          </div>
+        )}
+        {isElectron && (
+          <p className="setting-option-subtitle">
+            <Trans>
+              Data-source credentials are encrypted locally and require this passphrase after each app launch.
+            </Trans>
+          </p>
+        )}
         <div
           className="add-source-card"
           onClick={() => {
@@ -606,16 +518,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 }
                 return true;
               })
-              .filter((item) => {
-                if (
-                  isElectron &&
-                  process.platform !== "darwin" &&
-                  item.value === "icloud"
-                ) {
-                  return false;
-                }
-                return true;
-              })
               .map((item) => (
                 <div
                   className="account-login-option"
@@ -625,7 +527,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                   }}
                 >
                   <span className="account-login-option-label">
-                    {this.props.t(item.label) + (item.isPro ? " (Pro)" : "")}
+                    {this.props.t(item.label)}
                   </span>
                 </div>
               ))}
@@ -645,13 +547,15 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
             this.props.settingDrive === "ftp" ||
             this.props.settingDrive === "sftp" ||
             this.props.settingDrive === "mega" ||
-            this.props.settingDrive === "s3compatible" ? (
+            this.props.settingDrive === "s3compatible" ||
+            this.props.settingDrive === "localfolder" ||
+            this.props.settingDrive === "icloud" ? (
               <>
                 {driveInputConfig[this.props.settingDrive].map((item) => {
                   return (
                     <div key={item.value}>
                       <input
-                        type={item.type}
+                        type={item.type === "folder" ? "text" : item.type}
                         name={item.value}
                         key={item.value}
                         placeholder={
@@ -660,6 +564,26 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                             ? ""
                             : " (" + this.props.t("Optional") + ")")
                         }
+                        readOnly={item.type === "folder"}
+                        value={
+                          item.type === "folder"
+                            ? this.state.driveConfig[item.value] || ""
+                            : undefined
+                        }
+                        onClick={async () => {
+                          if (item.type !== "folder" || !isElectron) return;
+                          const selected = await window
+                            .require("electron")
+                            .ipcRenderer.invoke("pick-sync-folder");
+                          if (selected) {
+                            this.setState((prevState) => ({
+                              driveConfig: {
+                                ...prevState.driveConfig,
+                                [item.value]: selected,
+                              },
+                            }));
+                          }
+                        }}
                         onChange={(e) => {
                           if (e.target.value) {
                             this.setState((prevState) => ({
@@ -811,7 +735,9 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                     this.props.settingDrive === "ftp" ||
                     this.props.settingDrive === "sftp" ||
                     this.props.settingDrive === "mega" ||
-                    this.props.settingDrive === "s3compatible"
+                    this.props.settingDrive === "s3compatible" ||
+                    this.props.settingDrive === "localfolder" ||
+                    this.props.settingDrive === "icloud"
                   ) {
                     let connectionResult = await testConnection(
                       this.props.settingDrive,
@@ -836,43 +762,14 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 >
                   <Trans>Cancel</Trans>
                 </div>
-                {(this.props.settingDrive === "dropbox" ||
-                  this.props.settingDrive === "dubox" ||
-                  this.props.settingDrive === "yandex" ||
-                  this.props.settingDrive === "yiyiwu" ||
-                  this.props.settingDrive === "google" ||
-                  this.props.settingDrive === "boxnet" ||
-                  this.props.settingDrive === "pcloud" ||
-                  this.props.settingDrive === "adrive" ||
-                  this.props.settingDrive === "microsoft_exp" ||
-                  this.props.settingDrive === "microsoft") && (
-                  <div
-                    className="voice-add-confirm"
-                    style={{ marginRight: "10px" }}
-                    onClick={async () => {
-                      this.handleJump(
-                        new SyncUtil(this.props.settingDrive, {}).getAuthUrl(
-                          getServerRegion() === "china" &&
-                            (this.props.settingDrive === "microsoft" ||
-                              this.props.settingDrive === "microsoft_exp" ||
-                              this.props.settingDrive === "dubox" ||
-                              this.props.settingDrive === "yiyiwu" ||
-                              this.props.settingDrive === "adrive")
-                            ? KookitConfig.ThirdpartyConfig.cnCallbackUrl
-                            : KookitConfig.ThirdpartyConfig.callbackUrl
-                        )
-                      );
-                    }}
-                  >
-                    <Trans>Authorize</Trans>
-                  </div>
-                )}
                 {(this.props.settingDrive === "webdav" ||
                   this.props.settingDrive === "docker" ||
                   this.props.settingDrive === "ftp" ||
                   this.props.settingDrive === "sftp" ||
                   this.props.settingDrive === "mega" ||
-                  this.props.settingDrive === "s3compatible") && (
+                  this.props.settingDrive === "s3compatible" ||
+                  this.props.settingDrive === "localfolder" ||
+                  this.props.settingDrive === "icloud") && (
                   <div
                     className="voice-add-confirm"
                     style={{ marginRight: "10px" }}
@@ -894,22 +791,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                     <Trans>Test</Trans>
                   </div>
                 )}
-                {(this.props.settingDrive === "webdav" ||
-                  this.props.settingDrive === "ftp" ||
-                  this.props.settingDrive === "s3compatible" ||
-                  this.props.settingDrive === "sftp") &&
-                  ConfigService.getReaderConfig("lang") &&
-                  ConfigService.getReaderConfig("lang").startsWith("zh") && (
-                    <div
-                      className="voice-add-cancel"
-                      style={{ borderWidth: 0, lineHeight: "30px" }}
-                      onClick={() => {
-                        openExternalUrl(getWebsiteUrl() + "/zh/add-source");
-                      }}
-                    >
-                      {this.props.t("How to fill out")}
-                    </div>
-                  )}
               </div>
             </div>
           </div>
@@ -959,14 +840,12 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               {
                 label: "Please select",
                 value: "",
-                isPro: false,
                 support: ["desktop", "browser", "phone"],
               },
               ...driveList,
               {
                 label: "Add data source",
                 value: "add",
-                isPro: false,
                 support: ["desktop", "browser", "phone"],
               },
             ]
@@ -985,23 +864,13 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 }
                 return true;
               })
-              .filter((item) => {
-                if (
-                  isElectron &&
-                  process.platform !== "darwin" &&
-                  item.value === "icloud"
-                ) {
-                  return false;
-                }
-                return true;
-              })
               .map((item) => (
                 <option
                   value={item.value}
                   key={item.value}
                   className="lang-setting-option"
                 >
-                  {this.props.t(item.label) + (item.isPro ? " (Pro)" : "")}
+                  {this.props.t(item.label)}
                 </option>
               ))}
           </select>
@@ -1013,7 +882,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
             className="lang-setting-dropdown"
             onChange={this.handleDeleteDataSource}
           >
-            {[{ label: "Please select", value: "", isPro: false }, ...driveList]
+            {[{ label: "Please select", value: "" }, ...driveList]
               .filter(
                 (item) =>
                   this.props.dataSourceList.includes(item.value) ||
@@ -1025,7 +894,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                   key={item.value}
                   className="lang-setting-option"
                 >
-                  {this.props.t(item.label) + (item.isPro ? " (Pro)" : "")}
+                  {this.props.t(item.label)}
                 </option>
               ))}
           </select>
@@ -1044,9 +913,9 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               {this.props.t("Please select")}
             </option>
             {[
-              { label: "Local", value: "local", isPro: false },
+              { label: "Local", value: "local" },
               ...driveList,
-              { label: "Add data source", value: "add", isPro: false },
+              { label: "Add data source", value: "add" },
             ]
               .filter(
                 (item) =>
@@ -1060,7 +929,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                   key={item.value}
                   className="lang-setting-option"
                 >
-                  {this.props.t(item.label) + (item.isPro ? " (Pro)" : "")}
+                  {this.props.t(item.label)}
                 </option>
               ))}
           </select>
@@ -1079,9 +948,9 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               {this.props.t("Please select")}
             </option>
             {[
-              { label: "Local", value: "local", isPro: false },
+              { label: "Local", value: "local" },
               ...driveList,
-              { label: "Add data source", value: "add", isPro: false },
+              { label: "Add data source", value: "add" },
             ]
               .filter(
                 (item) =>
@@ -1095,15 +964,16 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                   key={item.value}
                   className="lang-setting-option"
                 >
-                  {this.props.t(item.label) + (item.isPro ? " (Pro)" : "")}
+                  {this.props.t(item.label)}
                 </option>
               ))}
           </select>
         </div>
 
-        {this.props.isAuthed && this.renderSwitchOption(syncSettingList)}
-        {this.props.isAuthed && (
-          <>
+        {this.renderSwitchOption(
+          syncSettingList.filter((item) => item.propName !== "isEnableKoodoSync")
+        )}
+        <>
             <div className="setting-dialog-new-title">
               <Trans>Scheduled sync interval</Trans>
               <select
@@ -1204,8 +1074,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 }
               </Trans>
             </p>
-          </>
-        )}
+        </>
       </>
     );
   }

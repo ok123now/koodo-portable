@@ -30,12 +30,8 @@ import {
   ocrTesseractLangList,
 } from "../../constants/dropdownList";
 import DatabaseService from "../../utils/storage/databaseService";
-import { getOcrResult, getOcrResultV2 } from "../../utils/request/reader";
 import { BookHelper } from "../../assets/lib/kookit.min";
-import {
-  parseWithMineruAgent,
-  parseWithSystemOCR,
-} from "../../utils/request/common";
+import { parseWithSystemOCR } from "../../utils/request/common";
 declare var window: any;
 let lock = false; //prevent from clicking too fasts
 
@@ -252,6 +248,19 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         this.props.currentBook.description.indexOf("scanned") > -1
           ? "scannedOcrEngine"
           : "textOcrEngine";
+      const configuredOcrEngine = ConfigService.getReaderConfig(ocrEngineKey);
+      const ocrEngine = ["system-ocr", "paddle", "tesseract"].includes(
+        configuredOcrEngine
+      )
+        ? configuredOcrEngine
+        : "paddle";
+      if (configuredOcrEngine !== ocrEngine) {
+        ConfigService.setReaderConfig(ocrEngineKey, ocrEngine);
+      }
+      const configuredOcrLang =
+        configuredOcrEngine === ocrEngine
+          ? ConfigService.getReaderConfig(ocrLangKey)
+          : "";
       let rendition = BookHelper.getRendition(
         result,
         {
@@ -270,7 +279,7 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
           fullTranslationMode:
             ConfigService.getAllListConfig("fullTranslationBooks").includes(
               this.props.currentBook.key
-            ) && this.props.isAuthed
+            )
               ? ConfigService.getReaderConfig("fullTranslationMode")
               : "no",
           textOrientation: ConfigService.getReaderConfig("textOrientation"),
@@ -294,34 +303,23 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
           ).includes(this.props.currentBook.key)
             ? "yes"
             : "no",
-          ocrLang: ConfigService.getReaderConfig(ocrLangKey)
-            ? ConfigService.getReaderConfig(ocrLangKey)
-            : ConfigService.getReaderConfig(ocrEngineKey) === "tesseract"
+          ocrLang: configuredOcrLang
+            ? configuredOcrLang
+            : ocrEngine === "tesseract"
               ? ocrTesseractLangList.find(
                   (item) => item.lang === ConfigService.getReaderConfig("lang")
                 )?.value || "chi_sim"
-              : ConfigService.getReaderConfig(ocrEngineKey)
+              : ocrEngine
                 ? ocrEngineList.find(
-                    (item) =>
-                      item.value === ConfigService.getReaderConfig(ocrEngineKey)
+                    (item) => item.value === ocrEngine
                   )?.lang || "general"
                 : "standard_v5_mobile",
-          externalWorker: {
-            recognize:
-              ConfigService.getReaderConfig(ocrEngineKey) === "system-ocr"
-                ? parseWithSystemOCR
-                : ConfigService.getReaderConfig(ocrEngineKey) ===
-                    "mineru-official-agent"
-                  ? parseWithMineruAgent
-                  : ConfigService.getReaderConfig(ocrLangKey) === "accurate"
-                    ? getOcrResultV2
-                    : getOcrResult,
-          },
-          ocrEngine: ConfigService.getReaderConfig(ocrEngineKey) || "paddle",
-          serverRegion:
-            getServerRegion() === "china" && this.props.isAuthed
-              ? "china"
-              : "global",
+          externalWorker:
+            ocrEngine === "system-ocr"
+              ? { recognize: parseWithSystemOCR }
+              : undefined,
+          ocrEngine,
+          serverRegion: getServerRegion(),
           paraSpacingValue:
             ConfigService.getReaderConfig("paraSpacingValue") || "1.5",
           titleSizeValue:
@@ -358,7 +356,7 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
       this.props.handleReadingState(true);
 
       ConfigService.setListConfig(this.props.currentBook.key, "recentBooks");
-      document.title = name + " - Koodo Reader";
+      document.title = name + " - Koodo Portable";
     });
   };
 

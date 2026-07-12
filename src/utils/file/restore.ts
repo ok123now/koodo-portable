@@ -257,6 +257,19 @@ export const restoreFromSnapshot = async (fileName: string) => {
         true
       );
     }
+    if (zipEntryNames.has("config/ai-cache.db")) {
+      await window
+        .require("electron")
+        .ipcRenderer.invoke("ai-cache-checkpoint", { close: true });
+      const aiCachePath = path.join(dataPath, "config", "ai-cache.db");
+      if (fs.existsSync(aiCachePath)) fs.unlinkSync(aiCachePath);
+      zip.extractEntryTo(
+        "config/ai-cache.db",
+        path.join(dataPath, "config"),
+        false,
+        true
+      );
+    }
     try {
       let configText = zip
         .getEntry("config/config.json")
@@ -376,6 +389,15 @@ export const restoreFromfilePath = async (filePath: string) => {
           break;
         }
         ConfigService.setItem("syncRecord", text);
+      } else if (entryName === "ai-cache.db") {
+        await window
+          .require("electron")
+          .ipcRenderer.invoke("ai-cache-checkpoint", { close: true });
+        const target = path.join(dataPath, "config", entryName);
+        if (!fs.existsSync(path.dirname(target))) {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+        }
+        fs.writeFileSync(target, await zip.file(fileName)!.async("nodebuffer"));
       } else if (entryName.endsWith(".db")) {
         const buf: ArrayBuffer = await zip.file(fileName)!.async("arraybuffer");
         const sqlUtil = new SqlUtil();

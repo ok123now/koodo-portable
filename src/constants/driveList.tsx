@@ -1,9 +1,33 @@
-export const driveList = [
+export interface DriveSource {
+  label: string;
+  value: string;
+  icon: string;
+  support: Array<"desktop" | "browser" | "phone">;
+  scoped: boolean;
+  needExtension?: boolean;
+}
+
+// OAuth sources are intentionally omitted: this portable build only exposes
+// protocols backed by credentials controlled directly by the reader.
+export const driveList: DriveSource[] = [
+  {
+    label: "Local folder",
+    value: "localfolder",
+    icon: "icon-folder",
+    support: ["desktop"],
+    scoped: false,
+  },
+  {
+    label: "iCloud Drive folder",
+    value: "icloud",
+    icon: "icon-icloud",
+    support: ["desktop"],
+    scoped: false,
+  },
   {
     label: "WebDAV",
     value: "webdav",
     icon: "icon-webdav",
-    isPro: true,
     support: ["desktop", "browser", "phone"],
     scoped: false,
     needExtension: true,
@@ -12,7 +36,6 @@ export const driveList = [
     label: "S3 Compatible",
     value: "s3compatible",
     icon: "icon-s3compatible",
-    isPro: true,
     support: ["desktop", "browser", "phone"],
     scoped: false,
     needExtension: true,
@@ -21,56 +44,6 @@ export const driveList = [
     label: "Docker",
     value: "docker",
     icon: "icon-docker",
-    isPro: true,
-    support: ["desktop", "browser", "phone"],
-    scoped: true,
-  },
-  {
-    label: "OneDrive",
-    value: "microsoft",
-    icon: "icon-onedrive",
-    isPro: true,
-    support: ["desktop", "browser", "phone"],
-    scoped: true,
-  },
-  {
-    label: "Google Drive",
-    value: "google",
-    icon: "icon-googledrive",
-    isPro: true,
-    support: ["desktop", "browser", "phone"],
-    scoped: false,
-  },
-  {
-    label: "Dropbox",
-    value: "dropbox",
-    icon: "icon-dropbox",
-    isPro: true,
-    support: ["desktop", "browser", "phone"],
-    scoped: true,
-  },
-  {
-    label: "iCloud",
-    value: "icloud",
-    icon: "icon-icloud",
-    isPro: true,
-    support: ["desktop", "phone"],
-    scoped: true,
-  },
-  {
-    label: "Dubox",
-    value: "dubox",
-    icon: "icon-dubox",
-    isPro: true,
-    support: ["desktop", "phone"],
-    scoped: false,
-  },
-
-  {
-    label: "Box",
-    value: "boxnet",
-    icon: "icon-box",
-    isPro: true,
     support: ["desktop", "browser", "phone"],
     scoped: false,
   },
@@ -79,58 +52,13 @@ export const driveList = [
     label: "MEGA",
     value: "mega",
     icon: "icon-mega",
-    isPro: true,
     support: ["desktop", "browser"],
     scoped: false,
   },
   {
-    label: "Aliyun Drive",
-    value: "adrive",
-    icon: "icon-adrive",
-    isPro: true,
-    support: ["desktop", "phone"],
-    scoped: false,
-  },
-  {
-    label: "Yandex Disk",
-    value: "yandex",
-    icon: "icon-yandex",
-    isPro: true,
-    support: ["desktop", "phone"],
-    scoped: false,
-  },
-  {
-    label: "115 Yun",
-    value: "yiyiwu",
-    icon: "icon-yiyiwu",
-    isPro: true,
-    support: ["desktop", "phone"],
-    scoped: false,
-  },
-
-  {
-    label: "pCloud",
-    value: "pcloud",
-    icon: "icon-pcloud",
-    isPro: true,
-    support: ["desktop", "phone"],
-    scoped: true,
-  },
-
-  {
-    label: "OneDrive (full access)",
-    value: "microsoft_exp",
-    icon: "icon-onedrive",
-    isPro: true,
-    support: ["desktop", "browser", "phone"],
-    scoped: false,
-  },
-
-  {
     label: "FTP",
     value: "ftp",
     icon: "icon-ftp",
-    isPro: true,
     support: ["desktop"],
     scoped: false,
   },
@@ -138,7 +66,6 @@ export const driveList = [
     label: "SFTP",
     value: "sftp",
     icon: "icon-sftp",
-    isPro: true,
     support: ["desktop"],
     scoped: false,
   },
@@ -157,6 +84,23 @@ interface DriveInputConfig {
   [key: string]: ConfigItem[];
 }
 export const driveInputConfig: DriveInputConfig = {
+  localfolder: [
+    {
+      label: "Local sync folder",
+      value: "dir",
+      type: "folder",
+      required: true,
+    },
+  ],
+  icloud: [
+    {
+      label: "iCloud Drive sync folder",
+      value: "dir",
+      type: "folder",
+      required: true,
+      note: "Choose an ordinary folder inside iCloud Drive. No Koodo app container is used.",
+    },
+  ],
   webdav: [
     {
       label: "Server address",

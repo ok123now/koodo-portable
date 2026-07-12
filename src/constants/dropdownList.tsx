@@ -412,16 +412,6 @@ export const titleSizeList = [
 export const ocrEngineList = [
   { label: "Please select", value: "", lang: "" },
   {
-    label: i18n.t("Official AI OCR") + " (Pro)",
-    value: "official-ai-ocr",
-    lang: "general",
-  },
-  {
-    label: "MinerU Agent API",
-    value: "mineru-official-agent",
-    lang: "",
-  },
-  {
     label: "System OCR",
     value: "system-ocr",
     lang: "auto",

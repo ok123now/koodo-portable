@@ -11,18 +11,47 @@ const {
   nativeTheme: electronNativeTheme,
   protocol,
   screen,
+  session,
   systemPreferences,
 } = require("electron");
 const path = require("path");
+const fs = require("fs");
+const {
+  resolvePortablePaths,
+  ensurePortablePaths,
+} = require("./portable-paths");
+const { CredentialVault } = require("./credential-vault");
+const { installOfficialNetworkBlocker } = require("./network-policy");
+const { isTrustedLocalRendererUrl } = require("./ipc-security");
+const {
+  getOfficialProfilePaths,
+  getOfficialKoodoSources,
+  migrateOfficialSource,
+} = require("./portable-migration");
+
+// This must happen before electron-store is constructed. Keeping Profile,
+// Library, Runtime and Logs below one portable Data directory also makes it
+// safe to move the app and its data together.
+const portablePaths = ensurePortablePaths(
+  resolvePortablePaths({
+    appPath: app.getAppPath(),
+    isPackaged: app.isPackaged,
+  })
+);
+app.setPath("userData", portablePaths.profile);
+app.setPath("sessionData", portablePaths.session);
+
 const isDev = require("electron-is-dev");
 const Store = require("electron-store");
 const log = require("electron-log/main");
 const os = require("os");
+const { randomUUID } = require("crypto");
 const { execFile } = require("child_process");
 const store = new Store();
-const fs = require("fs");
-const configDir = app.getPath("userData");
-const dirPath = path.join(configDir, "uploads");
+const dirPath = portablePaths.runtime;
+const credentialVault = new CredentialVault({
+  filePath: portablePaths.credentialVault,
+});
 const packageJson = require("./package.json");
 let mainWin;
 let tray = null;
@@ -40,7 +69,228 @@ let chatWindow;
 let dbConnection = {};
 let syncUtilCache = {};
 let pickerUtilCache = {};
-let downloadRequest = null;
+const manualMigrationSources = new Map();
+
+const assertTrustedPortableIpcSender = (event) => {
+  const url = event.senderFrame?.url || event.sender?.getURL?.() || "";
+  if (!isTrustedLocalRendererUrl(url, { isDev })) {
+    throw new Error("This IPC method is only available to the local Koodo UI");
+  }
+};
+
+const getPortableMigrationStatus = () => {
+  const profileOptions = {
+    platform: process.platform,
+    homeDir: os.homedir(),
+    env: process.env,
+  };
+  const sources = getOfficialKoodoSources(profileOptions).map((source) => ({
+    ...source,
+    ...inspectMigrationLibrary(source.libraryPath),
+  }));
+  let targetEmpty = false;
+  try {
+    targetEmpty =
+      fs.readdirSync(portablePaths.library).length === 0 ||
+      preparePristineMigrationTarget(false);
+  } catch (_) {}
+  return {
+    checkedProfilePaths: getOfficialProfilePaths(profileOptions),
+    sources,
+    target: {
+      libraryPath: portablePaths.library,
+      empty: targetEmpty,
+    },
+  };
+};
+
+const inspectMigrationLibrary = (libraryPath) => {
+  const booksDatabase = path.join(libraryPath, "config", "books.db");
+  if (!fs.existsSync(booksDatabase)) return { bookCount: 0 };
+  let database;
+  try {
+    database = new Database(booksDatabase, { readonly: true, fileMustExist: true });
+    const row = database.prepare("SELECT COUNT(*) AS count FROM books").get();
+    return { bookCount: Number(row?.count || 0) };
+  } catch (_) {
+    return { bookCount: null };
+  } finally {
+    try {
+      database?.close();
+    } catch (_) {}
+  }
+};
+
+const checkpointMigratedLibrary = (libraryPath) => {
+  const configPath = path.join(libraryPath, "config");
+  if (!fs.existsSync(configPath)) return;
+  for (const entry of fs.readdirSync(configPath)) {
+    if (!entry.endsWith(".db")) continue;
+    let database;
+    try {
+      database = new Database(path.join(configPath, entry));
+      database.pragma("wal_checkpoint(TRUNCATE)");
+      database.pragma("journal_mode = DELETE");
+    } finally {
+      try {
+        database?.close();
+      } catch (_) {}
+    }
+  }
+};
+
+const MIGRATED_RENDERER_KEYS = Object.freeze([
+  "readerConfig",
+  "aiModelConfig",
+  "recordLocation",
+  "readingTime",
+  "readingStats",
+  "recentBooks",
+  "favoriteBooks",
+  "shelfList",
+  "bookSortCode",
+  "noteSortCode",
+  "noteTags",
+  "themeColors",
+  "seperateStyleBooks",
+  "seperateStyleConfig",
+  "pdfjs.history",
+  "fullTranslationBooks",
+  "aiAskHistory",
+  "aiChatHistory",
+]);
+
+const readOfficialRendererConfig = async (profilePath) => {
+  const sourceStorage = path.join(profilePath, "Local Storage");
+  if (!fs.existsSync(sourceStorage)) return {};
+  const partitionId = `official-migration-${randomUUID()}`;
+  const partitionName = `persist:${partitionId}`;
+  // Copy before creating the Electron Session. Creating the Session first
+  // opens an empty LevelDB and would hide the copied official localStorage.
+  const partitionPath = path.join(portablePaths.session, "Partitions", partitionId);
+  const targetStorage = path.join(partitionPath, "Local Storage");
+  fs.rmSync(targetStorage, { recursive: true, force: true });
+  fs.mkdirSync(partitionPath, { recursive: true });
+  fs.cpSync(sourceStorage, targetStorage, {
+    recursive: true,
+    force: true,
+    dereference: false,
+  });
+  fs.rmSync(path.join(targetStorage, "leveldb", "LOCK"), { force: true });
+  const migrationSession = session.fromPartition(partitionName, { cache: false });
+  installOfficialNetworkBlocker(migrationSession, log);
+  const migrationWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      partition: partitionName,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  try {
+    await migrationWindow.loadFile(path.join(__dirname, "migration-reader.html"));
+    return await migrationWindow.webContents.executeJavaScript(
+      `Object.fromEntries(${JSON.stringify(MIGRATED_RENDERER_KEYS)}.map((key) => [key, localStorage.getItem(key)]).filter(([, value]) => value !== null))`,
+      true
+    );
+  } finally {
+    if (!migrationWindow.isDestroyed()) migrationWindow.destroy();
+    try {
+      await migrationSession.clearStorageData();
+      fs.rmSync(partitionPath, { recursive: true, force: true });
+    } catch (error) {
+      log.warn("Unable to remove the temporary migration partition", error);
+    }
+  }
+};
+
+const sanitizeMigratedRendererConfig = (rawConfig) => {
+  const output = {};
+  for (const key of MIGRATED_RENDERER_KEYS) {
+    if (typeof rawConfig?.[key] === "string") output[key] = rawConfig[key];
+  }
+  if (output.readerConfig) {
+    const readerConfig = JSON.parse(output.readerConfig);
+    [
+      "isAuthed",
+      "isPro",
+      "isEnableKoodoSync",
+      "serverRegion",
+      "userInfo",
+      "validUntil",
+    ].forEach((key) => delete readerConfig[key]);
+    output.readerConfig = JSON.stringify(readerConfig);
+  }
+  if (output.aiModelConfig) {
+    const models = JSON.parse(output.aiModelConfig);
+    for (const [modelKey, entry] of Object.entries(models || {})) {
+      const config = entry?.config;
+      if (!config || typeof config !== "object") continue;
+      if (typeof config.apiKey === "string" && config.apiKey) {
+        if (!credentialVault.isUnlocked) {
+          throw new Error("Unlock or create the portable credential vault before migrating AI models");
+        }
+        const credentialRef = `ai:model:${modelKey}`;
+        credentialVault.set(credentialRef, { apiKey: config.apiKey });
+        config.credentialRef = credentialRef;
+        delete config.apiKey;
+      }
+    }
+    output.aiModelConfig = JSON.stringify(models);
+  }
+  return output;
+};
+
+const preparePristineMigrationTarget = (clear = true) => {
+  const allowedRootEntries = new Set(["config", "snapshot"]);
+  const rootEntries = fs.readdirSync(portablePaths.library);
+  if (rootEntries.some((entry) => !allowedRootEntries.has(entry))) return false;
+  const configPath = path.join(portablePaths.library, "config");
+  if (fs.existsSync(configPath)) {
+    for (const entry of fs.readdirSync(configPath)) {
+      if (!/^[a-z0-9_-]+\.db(?:-wal|-shm)?$/i.test(entry)) return false;
+    }
+    for (const entry of fs.readdirSync(configPath).filter((name) => name.endsWith(".db"))) {
+      let database;
+      try {
+        database = new Database(path.join(configPath, entry), {
+          readonly: true,
+          fileMustExist: true,
+        });
+        const tables = database
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all();
+        for (const { name } of tables) {
+          if (name === "sqlite_sequence") continue;
+          const row = database.prepare(`SELECT COUNT(*) AS count FROM "${String(name).replace(/\"/g, '\"\"')}"`).get();
+          if (Number(row?.count || 0) > 0) return false;
+        }
+      } finally {
+        try {
+          database?.close();
+        } catch (_) {}
+      }
+    }
+  }
+  if (!clear) return true;
+  for (const database of Object.values(dbConnection)) {
+    try {
+      database.pragma("wal_checkpoint(TRUNCATE)");
+      database.close();
+    } catch (_) {}
+  }
+  dbConnection = {};
+  if (aiCacheConnection) {
+    try {
+      aiCacheConnection.close();
+    } catch (_) {}
+    aiCacheConnection = null;
+  }
+  fs.rmSync(portablePaths.library, { recursive: true, force: true });
+  fs.mkdirSync(portablePaths.library, { recursive: true });
+  return true;
+};
 
 const RESIZE_THROTTLE_MS = 300;
 
@@ -121,7 +371,7 @@ const runPowerShellScript = (script, timeout = 30000) => {
   });
 };
 
-const OCR_TEMP_DIR = path.join(configDir, "ocr-tmp");
+const OCR_TEMP_DIR = portablePaths.ocr;
 
 // macOS OCR 二进制支持的语言（VNRecognizeTextRequest recognitionLanguages）
 const MACOS_OCR_LANGS = new Set([
@@ -664,13 +914,15 @@ if (process.platform != "darwin" && process.argv.length >= 2) {
   filePath = process.argv[1];
   // Check argv for a deep link URL (cold start)
   for (const arg of process.argv) {
-    if (arg.startsWith("koodo-reader://")) {
+    if (arg.startsWith("koodo-portable://")) {
       pendingDeepLink = arg;
       break;
     }
   }
 }
 log.transports.file.fileName = "debug.log";
+log.transports.file.resolvePathFn = () =>
+  path.join(portablePaths.logs, "debug.log");
 log.transports.file.maxSize = 1024 * 1024; // 1MB
 log.initialize();
 store.set("appVersion", packageJson.version);
@@ -712,7 +964,7 @@ if (!singleInstance) {
       mainWin.focus();
     }
     // Handle deep link passed via second-instance argv
-    const deepLink = argv.find((arg) => arg.startsWith("koodo-reader://"));
+    const deepLink = argv.find((arg) => arg.startsWith("koodo-portable://"));
     if (deepLink) {
       handleCallback(deepLink);
     }
@@ -751,7 +1003,140 @@ const getDBConnection = (dbName, storagePath, sqlStatement) => {
   }
   return dbConnection[dbName];
 };
+
+let aiCacheConnection = null;
+const AI_CACHE_MAX_KEY_LENGTH = 512;
+const AI_CACHE_MAX_PAYLOAD_BYTES = 1024 * 1024;
+const normalizeAiCacheKey = (value, field, maxLength) => {
+  if (typeof value !== "string" || !value || value.length > maxLength) {
+    throw new Error(`Invalid AI cache ${field}`);
+  }
+  return value;
+};
+const serializeAiCachePayload = (payload) => {
+  let serialized;
+  try {
+    serialized = JSON.stringify(payload);
+  } catch (_) {
+    throw new Error("AI cache payload must be JSON serializable");
+  }
+  if (
+    serialized === undefined ||
+    Buffer.byteLength(serialized, "utf8") > AI_CACHE_MAX_PAYLOAD_BYTES
+  ) {
+    throw new Error("AI cache payload is too large");
+  }
+  return serialized;
+};
+const getAiCacheConnection = () => {
+  if (aiCacheConnection) return aiCacheConnection;
+  const databasePath = path.join(portablePaths.library, "config", "ai-cache.db");
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+  aiCacheConnection = new Database(databasePath);
+  aiCacheConnection.pragma("journal_mode = WAL");
+  aiCacheConnection.exec(`
+    CREATE TABLE IF NOT EXISTS ai_cache (
+      task TEXT NOT NULL,
+      cache_key TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(task, cache_key)
+    )
+  `);
+  return aiCacheConnection;
+};
+class LocalFolderSyncUtil {
+  constructor(config) {
+    this.storagePath = path.resolve(config.storagePath || portablePaths.library);
+    this.remoteRoot = path.resolve(config.dir || "");
+    if (!config.dir) throw new Error("A local sync folder is required");
+    fs.mkdirSync(this.remoteRoot, { recursive: true });
+    const relativeRemote = path.relative(this.storagePath, this.remoteRoot);
+    const relativeStorage = path.relative(this.remoteRoot, this.storagePath);
+    if (
+      relativeRemote === "" ||
+      (!relativeRemote.startsWith(`..${path.sep}`) && relativeRemote !== ".." && !path.isAbsolute(relativeRemote)) ||
+      (!relativeStorage.startsWith(`..${path.sep}`) && relativeStorage !== ".." && !path.isAbsolute(relativeStorage))
+    ) {
+      throw new Error("The sync folder must be separate from the portable library");
+    }
+    this.downloadedSize = 0;
+    this.stats = { total: 0, completed: 0, pending: 0, running: 0, hasFailedTasks: false };
+  }
+  safePath(root, type, name = "") {
+    const candidate = path.resolve(root, type || "", name || "");
+    const relative = path.relative(root, candidate);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("Invalid local sync path");
+    }
+    return candidate;
+  }
+  async run(operation) {
+    this.stats.total += 1;
+    this.stats.running += 1;
+    try {
+      const result = await operation();
+      this.stats.completed += 1;
+      return result;
+    } catch (error) {
+      this.stats.hasFailedTasks = true;
+      throw error;
+    } finally {
+      this.stats.running -= 1;
+    }
+  }
+  uploadFile(fileName, remoteName, type) {
+    return this.run(async () => {
+      const source = this.safePath(this.storagePath, type, fileName);
+      const target = this.safePath(this.remoteRoot, type, remoteName);
+      if (!fs.existsSync(source)) return false;
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+      return true;
+    });
+  }
+  downloadFile(fileName, localName, type) {
+    return this.run(async () => {
+      const source = this.safePath(this.remoteRoot, type, fileName);
+      const target = this.safePath(this.storagePath, type, localName);
+      if (!fs.existsSync(source)) return false;
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+      this.downloadedSize = fs.statSync(target).size;
+      return true;
+    });
+  }
+  async deleteFile(fileName, type) {
+    const target = this.safePath(this.remoteRoot, type, fileName);
+    if (!fs.existsSync(target)) return false;
+    fs.unlinkSync(target);
+    return true;
+  }
+  async listFiles(type) {
+    const directory = this.safePath(this.remoteRoot, type);
+    fs.mkdirSync(directory, { recursive: true });
+    return fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  }
+  async isExist(fileName, type) {
+    return fs.existsSync(this.safePath(this.remoteRoot, type, fileName));
+  }
+  getDownloadedSize() { return this.downloadedSize; }
+  getStats() { return { ...this.stats }; }
+  resetCounters() {
+    this.downloadedSize = 0;
+    this.stats = { total: 0, completed: 0, pending: 0, running: 0, hasFailedTasks: false };
+  }
+  clearQueue() {}
+}
 const getSyncUtil = async (config, isUseCache = true) => {
+  if (config.service === "localfolder" || config.service === "icloud") {
+    if (!isUseCache || !syncUtilCache[config.service]) {
+      syncUtilCache[config.service] = new LocalFolderSyncUtil(config);
+    }
+    return syncUtilCache[config.service];
+  }
   if (!isUseCache || !syncUtilCache[config.service]) {
     const { SyncUtil } = await import("./src/assets/lib/kookit-extra.min.mjs");
     syncUtilCache[config.service] = new SyncUtil(config.service, config);
@@ -973,17 +1358,6 @@ const createMainWin = () => {
       console.log(`[Renderer Console] Message: ${message}`);
     }
   );
-  //cancel-download-app
-  ipcMain.handle("cancel-download-app", (event, arg) => {
-    // Implement cancellation logic here
-    // Note: In this example, we are not keeping a reference to the request,
-    // so we cannot actually abort it. This is a placeholder for demonstration.
-    if (downloadRequest) {
-      downloadRequest.abort();
-      downloadRequest = null;
-    }
-    event.returnValue = "cancelled";
-  });
   // Discord RPC handlers
   ipcMain.handle("discord-rpc-update", async (event, config) => {
     const { bookTitle, author, percentage } = config;
@@ -1000,12 +1374,7 @@ const createMainWin = () => {
         largeImageText: "Koodo Reader",
         startTimestamp: Date.now(),
         instance: false,
-        buttons: [
-          {
-            label: "Get Koodo Reader",
-            url: "https://koodoreader.com",
-          },
-        ],
+        buttons: [],
       });
     } catch (e) {
       console.warn("Failed to set Discord activity:", e.message);
@@ -1019,70 +1388,6 @@ const createMainWin = () => {
         console.warn("Failed to clear Discord activity:", e.message);
       }
     }
-  });
-  ipcMain.handle("update-win-app", (event, config) => {
-    let fileName = `koodo-reader-installer.exe`;
-    let supportedArchs = ["x64", "ia32", "arm64"];
-    //get system arch
-    let arch = os.arch();
-    if (!supportedArchs.includes(arch)) {
-      return;
-    }
-
-    let url = `https://dl.koodoreader.com/v${config.version}/Koodo-Reader-${config.version}-${arch}.exe`;
-    const https = require("https");
-    const { spawn } = require("child_process");
-    const file = fs.createWriteStream(path.join(app.getPath("temp"), fileName));
-    downloadRequest = https.get(url, (res) => {
-      const totalSize = parseInt(res.headers["content-length"], 10);
-      let downloadedSize = 0;
-      res.on("data", (chunk) => {
-        downloadedSize += chunk.length;
-        const progress = ((downloadedSize / totalSize) * 100).toFixed(2);
-        const downloadedMB = (downloadedSize / 1024 / 1024).toFixed(2);
-        const totalMB = (totalSize / 1024 / 1024).toFixed(2);
-        mainWin.webContents.send("download-app-progress", {
-          progress,
-          downloadedMB,
-          totalMB,
-        });
-      });
-
-      res.pipe(file);
-      file.on("finish", () => {
-        console.info("\n下载完成！");
-        file.close();
-
-        let updateExePath = path.join(app.getPath("temp"), fileName);
-        if (!fs.existsSync(updateExePath)) {
-          console.error("更新包不存在:", updateExePath);
-          return;
-        }
-        // 验证文件可执行性
-        try {
-          fs.accessSync(updateExePath, fs.constants.X_OK);
-          console.info("更新包可执行性验证通过");
-        } catch (err) {
-          console.error("更新包不可执行:", err.message);
-          return;
-        }
-        try {
-          // 先退出应用，再启动安装程序，避免文件锁定导致覆盖安装失败
-          app.once("will-quit", () => {
-            const child = spawn(updateExePath, [], {
-              stdio: "ignore",
-              detached: true,
-              shell: true,
-              windowsHide: false,
-            });
-            child.unref();
-          });
-          app.quit();
-        } catch (err) {
-          console.error(`spawn 执行异常: ${err.message}`);
-        }
-      });
-    });
   });
   ipcMain.handle("open-book", (event, config) => {
     let { url, isMergeWord, isAutoFullscreen, isAutoMaximize, isPreventSleep } =
@@ -1285,13 +1590,13 @@ const createMainWin = () => {
   });
 
   ipcMain.handle("clear-tts", async (event, config) => {
-    if (!fs.existsSync(path.join(dirPath, "tts"))) {
+    if (!fs.existsSync(portablePaths.tts)) {
       return "pong";
     } else {
       const fsExtra = require("fs-extra");
       try {
-        await fsExtra.remove(path.join(dirPath, "tts"));
-        await fsExtra.mkdir(path.join(dirPath, "tts"));
+        await fsExtra.remove(portablePaths.tts);
+        await fsExtra.mkdir(portablePaths.tts);
         return "pong";
       } catch (err) {
         console.error(err);
@@ -1342,6 +1647,195 @@ const createMainWin = () => {
         return "{}";
       }
     }
+  });
+  // The renderer only ever sends a passphrase or credential value. The
+  // derived encryption key lives exclusively in this main-process object.
+  // `get` returns plaintext only to the packaged local UI; future main-process
+  // cloud/AI callers should consume credentials without this round trip.
+  ipcMain.handle("credential-vault-status", async (event) => {
+    assertTrustedPortableIpcSender(event);
+    return {
+      unlocked: credentialVault.isUnlocked,
+      exists: fs.existsSync(portablePaths.credentialVault),
+    };
+  });
+  ipcMain.handle("credential-vault-unlock", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    return credentialVault.unlock((request || {}).passphrase);
+  });
+  ipcMain.handle("credential-vault-lock", async (event) => {
+    assertTrustedPortableIpcSender(event);
+    return credentialVault.lock();
+  });
+  ipcMain.handle("credential-vault-get", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    return credentialVault.get((request || {}).name);
+  });
+  ipcMain.handle("credential-vault-set", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    return credentialVault.set((request || {}).name, (request || {}).value);
+  });
+  ipcMain.handle("credential-vault-delete", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    return credentialVault.delete((request || {}).name);
+  });
+  ipcMain.handle("credential-vault-export", async (event) => {
+    assertTrustedPortableIpcSender(event);
+    return { vault: credentialVault.exportEncrypted() };
+  });
+  ipcMain.handle("credential-vault-import", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    return credentialVault.importEncrypted((request || {}).vault);
+  });
+  ipcMain.handle("portable-migration-status", async (event) => {
+    assertTrustedPortableIpcSender(event);
+    return getPortableMigrationStatus();
+  });
+  ipcMain.handle("pick-sync-folder", async (event) => {
+    assertTrustedPortableIpcSender(event);
+    const selection = await dialog.showOpenDialog(mainWin, {
+      title: "Select a local or iCloud Drive sync folder",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return selection.canceled ? "" : selection.filePaths[0] || "";
+  });
+  ipcMain.handle("portable-migration-pick-source", async (event) => {
+    assertTrustedPortableIpcSender(event);
+    const selection = await dialog.showOpenDialog(mainWin, {
+      title: "Select the Koodo library folder",
+      properties: ["openDirectory"],
+    });
+    if (selection.canceled || !selection.filePaths[0]) return { canceled: true };
+    const libraryPath = path.resolve(selection.filePaths[0]);
+    const stat = fs.lstatSync(libraryPath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error("The selected library must be a regular directory");
+    }
+    if (!fs.existsSync(path.join(libraryPath, "config", "books.db"))) {
+      throw new Error("The selected folder does not contain config/books.db");
+    }
+    const sourceId = `manual-${randomUUID()}`;
+    const detectedProfile = getOfficialProfilePaths({
+      platform: process.platform,
+      homeDir: os.homedir(),
+      env: process.env,
+    }).find((profilePath) => fs.existsSync(profilePath));
+    const source = {
+      id: sourceId,
+      profilePath:
+        detectedProfile || path.join(libraryPath, ".no-official-profile"),
+      libraryPath,
+      kind: "manual",
+      profileConfig: { found: Boolean(detectedProfile), parseable: false, removedKeyCount: 0 },
+      ...inspectMigrationLibrary(libraryPath),
+    };
+    manualMigrationSources.set(sourceId, source);
+    return { canceled: false, source };
+  });
+  ipcMain.handle("portable-migration-migrate", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    const sourceId = (request || {}).sourceId;
+    if (typeof sourceId !== "string" || !sourceId) {
+      throw new Error("A detected migration source must be selected");
+    }
+    // Never accept a renderer-supplied filesystem path. The selected source
+    // must be one of the read-only locations discovered on this machine.
+    const source = getOfficialKoodoSources({
+      platform: process.platform,
+      homeDir: os.homedir(),
+      env: process.env,
+    }).find((item) => item.id === sourceId) || manualMigrationSources.get(sourceId);
+    if (!source) throw new Error("Selected migration source is unavailable");
+    const rendererConfig = (request || {}).dryRun === true
+      ? {}
+      : sanitizeMigratedRendererConfig(
+          await readOfficialRendererConfig(source.profilePath)
+        );
+    if ((request || {}).dryRun !== true && !preparePristineMigrationTarget()) {
+      throw new Error("Portable Library already contains data and will not be overwritten");
+    }
+    const result = migrateOfficialSource({
+      source,
+      targetLibrary: portablePaths.library,
+      targetProfile: portablePaths.profile,
+      dryRun: (request || {}).dryRun === true,
+    });
+    if (result.migrated) checkpointMigratedLibrary(portablePaths.library);
+    return { ...result, rendererConfig };
+  });
+  ipcMain.handle("ai-cache-get", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    const task = normalizeAiCacheKey((request || {}).task, "task", 128);
+    const cacheKey = normalizeAiCacheKey(
+      (request || {}).cacheKey,
+      "key",
+      AI_CACHE_MAX_KEY_LENGTH
+    );
+    const row = getAiCacheConnection()
+      .prepare(
+        "SELECT payload, updated_at FROM ai_cache WHERE task = ? AND cache_key = ?"
+      )
+      .get(task, cacheKey);
+    if (!row) return { hit: false };
+    return {
+      hit: true,
+      payload: JSON.parse(row.payload),
+      updatedAt: row.updated_at,
+    };
+  });
+  ipcMain.handle("ai-cache-set", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    const task = normalizeAiCacheKey((request || {}).task, "task", 128);
+    const cacheKey = normalizeAiCacheKey(
+      (request || {}).cacheKey,
+      "key",
+      AI_CACHE_MAX_KEY_LENGTH
+    );
+    const updatedAt = new Date().toISOString();
+    getAiCacheConnection()
+      .prepare(
+        `INSERT INTO ai_cache (task, cache_key, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(task, cache_key) DO UPDATE SET
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`
+      )
+      .run(task, cacheKey, serializeAiCachePayload((request || {}).payload), updatedAt);
+    return { stored: true, updatedAt };
+  });
+  ipcMain.handle("ai-cache-delete", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    const task = normalizeAiCacheKey((request || {}).task, "task", 128);
+    const cacheKey = normalizeAiCacheKey(
+      (request || {}).cacheKey,
+      "key",
+      AI_CACHE_MAX_KEY_LENGTH
+    );
+    const result = getAiCacheConnection()
+      .prepare("DELETE FROM ai_cache WHERE task = ? AND cache_key = ?")
+      .run(task, cacheKey);
+    return { deleted: result.changes };
+  });
+  ipcMain.handle("ai-cache-clear", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    const task = (request || {}).task;
+    const result =
+      task === undefined || task === null
+        ? getAiCacheConnection().prepare("DELETE FROM ai_cache").run()
+        : getAiCacheConnection()
+            .prepare("DELETE FROM ai_cache WHERE task = ?")
+            .run(normalizeAiCacheKey(task, "task", 128));
+    return { deleted: result.changes };
+  });
+  ipcMain.handle("ai-cache-checkpoint", async (event, request = {}) => {
+    assertTrustedPortableIpcSender(event);
+    if (!aiCacheConnection) return { checkpointed: true, open: false };
+    aiCacheConnection.pragma("wal_checkpoint(TRUNCATE)");
+    if ((request || {}).close === true) {
+      aiCacheConnection.close();
+      aiCacheConnection = null;
+    }
+    return { checkpointed: true, open: true };
   });
   ipcMain.handle("check-cloud-url", async (event, config) => {
     const https = require("https");
@@ -1904,7 +2398,7 @@ const createMainWin = () => {
     event.returnvalue = false;
   });
   ipcMain.on("storage-location", (event, config) => {
-    event.returnValue = path.join(dirPath, "data");
+    event.returnValue = portablePaths.library;
   });
   ipcMain.on("url-window-status", (event, config) => {
     if (config.type === "dict") {
@@ -2002,10 +2496,16 @@ const createMainWin = () => {
 };
 
 app.on("ready", () => {
+  installOfficialNetworkBlocker(session.defaultSession, log);
   createMainWin();
 });
 app.on("before-quit", () => {
   isQuitting = true;
+  credentialVault.lock();
+  if (aiCacheConnection) {
+    aiCacheConnection.close();
+    aiCacheConnection = null;
+  }
   destroyDiscordRPC();
 });
 app.on("window-all-closed", () => {
@@ -2015,7 +2515,7 @@ app.on("open-file", (e, pathToFile) => {
   filePath = pathToFile;
 });
 // Register protocol handler
-app.setAsDefaultProtocolClient("koodo-reader");
+app.setAsDefaultProtocolClient("koodo-portable");
 const serializeArg = (arg) => {
   if (arg === null) return "null";
   if (arg === undefined) return "undefined";
@@ -2056,7 +2556,7 @@ app.on("open-url", (event, url) => {
 const handleCallback = (url) => {
   try {
     // 检查 URL 是否有效
-    if (!url.startsWith("koodo-reader://")) {
+    if (!url.startsWith("koodo-portable://")) {
       console.error("Invalid URL format:", url);
       return;
     }

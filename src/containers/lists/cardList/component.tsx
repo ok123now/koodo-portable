@@ -280,7 +280,7 @@ class CardList extends React.Component<CardListProps, CardListStates> {
                       top: "2px",
                     }}
                     onClick={() => {
-                      const link = `koodo-reader://open-note?noteKey=${item.key}`;
+                      const link = `koodo-portable://open-note?noteKey=${item.key}`;
                       navigator.clipboard.writeText(link).then(() => {
                         toast(this.props.t("Copied"));
                       });

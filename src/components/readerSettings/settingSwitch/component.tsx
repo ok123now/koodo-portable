@@ -7,6 +7,7 @@ import { wordFrequencyList } from "../../../constants/dropdownList";
 import toast from "react-hot-toast";
 import { vexComfirmAsync, detectLocalLanguage } from "../../../utils/common";
 import BookUtil from "../../../utils/file/bookUtil";
+import AiTaskService from "../../../utils/ai/aiTaskService";
 class SettingSwitch extends React.Component<
   SettingSwitchProps,
   SettingSwitchState
@@ -247,13 +248,12 @@ class SettingSwitch extends React.Component<
             onClick={async () => {
               const next = !this.state.isWordDefinition;
               if (next) {
-                if (!this.props.isAuthed) {
-                  toast(
-                    this.props.t("Please upgrade to Pro to use this feature")
+                if (!(await AiTaskService.hasTaskModel("wordDefinition"))) {
+                  toast.error(
+                    this.props.t(
+                      "Please configure an AI word-definition model first"
+                    )
                   );
-                  this.props.handleSetting(true);
-                  this.props.handleSettingMode("account");
-                  ConfigService.setReaderConfig("fullTranslationMode", "no");
                   return;
                 }
                 let lang = "";

@@ -336,7 +336,7 @@ class MoreAction extends React.Component<MoreActionProps, MoreActionState> {
               className="action-dialog-edit"
               style={{ paddingLeft: "0px" }}
               onClick={() => {
-                const link = `koodo-reader://open-book?bookKey=${this.props.currentBook.key}`;
+                const link = `koodo-portable://open-book?bookKey=${this.props.currentBook.key}`;
                 navigator.clipboard.writeText(link).then(() => {
                   toast.success(this.props.t("Copied"));
                 });

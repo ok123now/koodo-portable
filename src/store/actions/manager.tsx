@@ -1,27 +1,14 @@
-import {
-  ConfigService,
-  TokenService,
-} from "../../assets/lib/kookit-extra-browser.min";
+import { ConfigService } from "../../assets/lib/kookit-extra-browser.min";
 import BookModel from "../../models/Book";
 import PluginModel from "../../models/Plugin";
 import { Dispatch } from "redux";
 import DatabaseService from "../../utils/storage/databaseService";
-import {
-  fetchUserInfo,
-  getUserRequest,
-  resetUserRequest,
-} from "../../utils/request/user";
 import {
   officialDictList,
   officialTranList,
 } from "../../constants/settingList";
 import toast from "react-hot-toast";
 import BookUtil from "../../utils/file/bookUtil";
-import i18n from "../../i18n";
-import { azureTTSVoiceList, officialVoiceList } from "../../constants/ttsList";
-import { langToName } from "../../utils/common";
-import { resetReaderRequest } from "../../utils/request/reader";
-import { resetThirdpartyRequest } from "../../utils/request/thirdparty";
 import DictUtil from "../../utils/file/dictUtil";
 export function handleBooks(books: BookModel[]) {
   return { type: "HANDLE_BOOKS", payload: books };
@@ -222,57 +209,9 @@ export function handleFetchBooks() {
 }
 export function handleFetchUserInfo() {
   return async (dispatch: Dispatch) => {
-    let response = await fetchUserInfo();
-    let userInfo: any = null;
-    if (response.code === 200) {
-      userInfo = response.data;
-      ConfigService.setReaderConfig(
-        "isEnableKoodoSync",
-        userInfo.is_enable_koodo_sync || "no"
-      );
-      if (
-        userInfo.is_enable_koodo_sync === "yes" &&
-        userInfo.default_sync_option &&
-        userInfo.default_sync_token
-      ) {
-        if (
-          ConfigService.getItem("defaultSyncOption") ===
-          userInfo.default_sync_option
-        ) {
-          let encryptedToken = await TokenService.getToken(
-            userInfo.default_sync_option + "_token"
-          );
-          if (encryptedToken !== userInfo.default_sync_token) {
-            await TokenService.setToken(
-              userInfo.default_sync_option + "_token",
-              userInfo.default_sync_token
-            );
-          }
-        }
-      }
-    }
-    if (
-      userInfo &&
-      userInfo.valid_until < parseInt(new Date().getTime() / 1000 + "")
-    ) {
-      dispatch(handleShowSupport(true));
-    }
-    if (userInfo && userInfo.valid_until && userInfo.token_valid_until) {
-      if (
-        userInfo.valid_until > 0 &&
-        userInfo.token_valid_until > 0 &&
-        userInfo.valid_until > userInfo.token_valid_until
-      ) {
-        let userRequest = await getUserRequest();
-        await userRequest.refreshUserToken();
-        resetReaderRequest();
-        resetUserRequest();
-        resetThirdpartyRequest();
-      }
-    }
-
-    dispatch(handleUserInfo(userInfo));
-    return userInfo;
+    ConfigService.setReaderConfig("isEnableKoodoSync", "no");
+    dispatch(handleUserInfo(null));
+    return null;
   };
 }
 export function handleFetchPlugins() {
@@ -394,152 +333,9 @@ export function handleFetchPlugins() {
             pluginList.push(assistPlugin);
           }
         }
-        TokenService.getToken("is_authed").then((value) => {
-          let isAuthed = value === "yes";
-          if (
-            isAuthed &&
-            ConfigService.getReaderConfig("isDisableAI") !== "yes"
-          ) {
-            let dictPlugin = new PluginModel(
-              "official-ai-dict-plugin",
-              "dictionary",
-              "Official AI Dictionary",
-              "dict",
-              "1.0.0",
-              "",
-              {},
-              officialDictList,
-              [],
-              "",
-              ""
-            );
-            pluginList.push(dictPlugin);
-            let transPlugin = new PluginModel(
-              "official-ai-trans-plugin",
-              "translation",
-              "Official AI Translation",
-              "translation",
-              "1.0.0",
-              "",
-              {},
-              officialTranList,
-              [],
-              "",
-              ""
-            );
-            pluginList.push(transPlugin);
-            let sumPlugin = new PluginModel(
-              "official-ai-assistant-plugin",
-              "assistant",
-              "Official AI Assistant",
-              "assistant",
-              "1.0.0",
-              "",
-              {},
-              officialTranList,
-              [],
-              "",
-              ""
-            );
-            pluginList.push(sumPlugin);
-            let sortedVoiceList = [
-              ...officialVoiceList.map((item) => {
-                return {
-                  ...item,
-                  label:
-                    i18n.t("Official AI Voice") +
-                    " - " +
-                    item.displayName +
-                    " - " +
-                    item.language +
-                    " - " +
-                    (item.gender === "female"
-                      ? i18n.t("Female voice")
-                      : i18n.t("Male voice")),
-                };
-              }),
-              ...azureTTSVoiceList.map((item) => {
-                return {
-                  ...item,
-                  label:
-                    "Azure TTS" +
-                    " - " +
-                    item.displayName +
-                    " - " +
-                    langToName(item.locale) +
-                    " - " +
-                    (item.gender === "female"
-                      ? i18n.t("Female voice")
-                      : i18n.t("Male voice")),
-                };
-              }),
-            ];
-            let voicePlugin = new PluginModel(
-              "official-ai-voice-plugin",
-              "voice",
-              "Official AI Voice",
-              "speaker",
-              "1.0.0",
-              "",
-              {},
-              {},
-              sortedVoiceList.map((item: any) => {
-                return {
-                  ...item, // 创建新对象
-                  plugin: "official-ai-voice-plugin",
-                  config: {},
-                  displayName: item.label,
-                };
-              }),
-              "",
-              ""
-            );
-            pluginList.push(voicePlugin);
-            dispatch(handlePlugins(pluginList));
-          } else if (isAuthed) {
-            let sortedVoiceList = [
-              ...azureTTSVoiceList.map((item) => {
-                return {
-                  ...item,
-                  label:
-                    "Azure TTS" +
-                    " - " +
-                    item.displayName +
-                    " - " +
-                    langToName(item.locale) +
-                    " - " +
-                    (item.gender === "female"
-                      ? i18n.t("Female voice")
-                      : i18n.t("Male voice")),
-                };
-              }),
-            ];
-            let voicePlugin = new PluginModel(
-              "official-ai-voice-plugin",
-              "voice",
-              "Official AI Voice",
-              "speaker",
-              "1.0.0",
-              "",
-              {},
-              {},
-              sortedVoiceList.map((item: any) => {
-                return {
-                  ...item, // 创建新对象
-                  plugin: "official-ai-voice-plugin",
-                  config: {},
-                  displayName: item.label,
-                };
-              }),
-              "",
-              ""
-            );
-            pluginList.push(voicePlugin);
-            dispatch(handlePlugins(pluginList));
-          } else {
-            dispatch(handlePlugins(pluginList));
-          }
-        });
+        // The portable build registers only user-configured local and custom
+        // plugins. It intentionally never adds Koodo-hosted AI providers.
+        dispatch(handlePlugins(pluginList));
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -551,17 +347,7 @@ export function handleFetchPlugins() {
 }
 export function handleFetchAuthed() {
   return (dispatch: Dispatch) => {
-    try {
-      TokenService.getToken("is_authed").then((value) => {
-        let isAuthed = value === "yes";
-        if (isAuthed && !ConfigService.getItem("serverRegion")) {
-          ConfigService.setItem("serverRegion", "global");
-        }
-        dispatch(handleAuthed(isAuthed));
-      });
-    } catch (error) {
-      console.error(error);
-    }
+    dispatch(handleAuthed(false));
   };
 }
 export function handleFetchBookSortCode() {

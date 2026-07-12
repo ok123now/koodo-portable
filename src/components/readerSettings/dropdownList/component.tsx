@@ -11,6 +11,7 @@ import {
   KookitConfig,
 } from "../../../assets/lib/kookit-extra-browser.min";
 import FontUtil from "../../../utils/file/fontUtil";
+import AiTaskService from "../../../utils/ai/aiTaskService";
 import toast from "react-hot-toast";
 declare var window: any;
 class DropdownList extends React.Component<
@@ -102,7 +103,7 @@ class DropdownList extends React.Component<
     });
   };
 
-  handleView(event: any, option: string) {
+  async handleView(event: any, option: string) {
     const value = event.target.value;
     ConfigService.setReaderConfig(option, value);
     let arr = [value];
@@ -168,13 +169,13 @@ class DropdownList extends React.Component<
             "fullTranslationBooks"
           );
         } else {
-          if (!this.props.isAuthed) {
+          if (!(await AiTaskService.hasTaskModel("translation"))) {
             this.setState({
               fullTranslationModeValue: "no",
             });
-            toast(this.props.t("Please upgrade to Pro to use this feature"));
-            this.props.handleSetting(true);
-            this.props.handleSettingMode("account");
+            toast.error(
+              this.props.t("Please configure an AI translation model first")
+            );
             ConfigService.setReaderConfig("fullTranslationMode", "no");
             return;
           }

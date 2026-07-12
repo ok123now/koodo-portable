@@ -1,18 +1,21 @@
 {
-  "name": "koodo-reader",
+  "name": "koodo-portable",
   "main": "main.js",
   "version": "2.4.0",
-  "description": "Koodo Reader is a cross-platform ebook reader",
+  "description": "Personal portable ebook reader build",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ok123now/koodo-portable.git"
+  },
   "author": {
-    "name": "App by Troye",
-    "email": "feedback@koodoreader.com"
+    "name": "Koodo Portable contributors"
   },
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=6.0.0"
   },
-  "repository": "https://github.com/koodo-reader/koodo-reader",
-  "private": false,
+  "private": true,
   "resolutions": {
     "@types/react": "^18.3.1",
     "node-gyp": "^10.0.0"
@@ -23,7 +26,7 @@
     "adm-zip": "^0.5.2",
     "axios": "0.31.1",
     "basic-ftp": "5.3.1",
-    "better-sqlite3": "^11.6.0",
+    "better-sqlite3": "^12.11.1",
     "buffer": "^6.0.3",
     "chardet": "^2.0.0",
     "color-thief-browser": "^2.0.2",
@@ -109,22 +112,32 @@
     "eject": "react-scripts eject",
     "ele": "electron .",
     "dev": "concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://127.0.0.1:3000/ && nodemon --watch main.js --exec electron .\"",
-    "release": "electron-builder",
+    "release": "electron-builder --publish never",
+    "release:portable": "electron-builder --mac dmg zip --win portable --publish never",
+    "release:mac": "electron-builder --mac dmg --publish never",
     "prerelease": "react-scripts build",
     "postinstall": "node scripts/patch-nan.js && electron-builder install-app-deps",
     "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "homepage": "./",
   "build": {
-    "appId": "xyz.960960.koodo",
-    "productName": "Koodo Reader",
-    "copyright": "Copyright (c) 2020-2025 ${author}",
+    "appId": "io.github.koodoportable.reader",
+    "productName": "Koodo Portable",
+    "copyright": "Personal portable build",
     "files": [
       "build/**/*",
       "node_modules/**/*",
       "package.json",
+      "LICENSE",
+      "PORTABLE.md",
       "src/assets/lib/kookit-extra.min.mjs",
-      "main.js"
+      "main.js",
+      "portable-paths.js",
+      "credential-vault.js",
+      "network-policy.js",
+      "ipc-security.js",
+      "portable-migration.js",
+      "migration-reader.html"
     ],
     "extraResources": [
       {
@@ -136,18 +149,13 @@
       }
     ],
     "protocols": {
-      "name": "KoodoReader",
+      "name": "Koodo Portable",
       "schemes": [
-        "koodo-reader"
+        "koodo-portable"
       ]
     },
     "directories": {
       "buildResources": "assets"
-    },
-    "publish": {
-      "provider": "github",
-      "repo": "koodo-reader",
-      "owner": "koodo-reader"
     },
     "buildDependenciesFromSource": false,
     "nodeGypRebuild": false,
@@ -233,13 +241,16 @@
       "darkModeSupport": true,
       "entitlements": "assets/macos/entitlements.mac.plist",
       "entitlementsInherit": "assets/macos/entitlements.mac.plist",
-      "identity": "Liang Guo",
-      "gatekeeperAssess": false,
-      "hardenedRuntime": true,
-      "notarize": true,
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64",
             "arm64"
@@ -248,7 +259,7 @@
       ],
       "icon": "assets/icons/icon.icns",
       "category": "public.app-category.productivity",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}-Portable.${ext}"
     },
     "win": {
       "target": [
@@ -274,7 +285,7 @@
         }
       ],
       "icon": "assets/icons/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}-Win.${ext}"
+      "artifactName": "${productName}-${version}-${arch}-Win-Portable.${ext}"
     },
     "linux": {
       "icon": "assets/icons",
@@ -310,15 +321,6 @@
     "portable": {
       "artifactName": "${productName}-${version}-${arch}-Portable.${ext}"
     },
-    "appx": {
-      "applicationId": "com.koodoreader.electron",
-      "identityName": "AppbyTroye.KoodoReader",
-      "publisher": "CN=0AEAD7C6-DF4A-4D05-8FA0-D816D7DE37FF",
-      "publisherDisplayName": "App by Troye",
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "displayName": "Koodo Reader",
-      "backgroundColor": "transparent"
-    },
     "nsis": {
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "oneClick": true,
@@ -326,13 +328,7 @@
       "buildUniversalInstaller": false,
       "include": "assets/windows/installer.nsh"
     },
-    "snap": {
-      "publish": [
-        {
-          "provider": "github"
-        }
-      ]
-    }
+    "snap": {}
   },
   "eslintConfig": {
     "extends": "react-app",

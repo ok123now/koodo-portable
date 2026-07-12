@@ -10,7 +10,8 @@ export interface AIModelConfig {
   endpoint: string;
   modelName: string;
   modelId: string;
-  apiKey: string;
+  apiKey?: string;
+  credentialRef?: string;
   providerId: string;
   providerName: string;
 }

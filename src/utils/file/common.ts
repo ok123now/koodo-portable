@@ -10,9 +10,12 @@ import Book from "../../models/Book";
 import Note from "../../models/Note";
 import Bookmark from "../../models/Bookmark";
 import DictHistory from "../../models/DictHistory";
-import { decryptToken } from "../request/thirdparty";
 import toast from "react-hot-toast";
 import i18n from "../../i18n";
+import {
+  CredentialVaultLockedError,
+  getDataSourceCredential,
+} from "../storage/credentialVault";
 declare var window: any;
 
 // File System Access API type declarations
@@ -260,14 +263,22 @@ export const getCloudConfig = (service: string): Promise<any> => {
 export const getCloudToken = async (service: string) => {
   if (configCache[service]) {
     return configCache[service];
-  } else {
-    let result = await decryptToken(service);
-    if (result.code !== 200) {
+  }
+  try {
+    const config = await getDataSourceCredential(service);
+    if (!config) {
       return null;
     }
-    let config = JSON.parse(result.data.token);
     configCache[service] = config;
     return config;
+  } catch (error) {
+    if (error instanceof CredentialVaultLockedError) {
+      toast.error(i18n.t("Unlock the local credential vault before using this data source"));
+      return null;
+    }
+    console.error("Unable to read local data-source credentials", error);
+    toast.error(i18n.t("Cannot read local data-source credentials"));
+    return null;
   }
 };
 export const removeCloudConfig = (service: string) => {

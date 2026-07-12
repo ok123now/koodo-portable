@@ -117,6 +117,13 @@ export const generateSnapshot = async () => {
         );
       }
     }
+    await window
+      .require("electron")
+      .ipcRenderer.invoke("ai-cache-checkpoint", { close: false });
+    const aiCachePath = path.join(dataPath, "config", "ai-cache.db");
+    if (fs.existsSync(aiCachePath)) {
+      zip.addLocalFile(aiCachePath, "config");
+    }
     let configStr = JSON.stringify(await ConfigUtil.dumpConfig("config"));
     zip.addFile("config/config.json", Buffer.from(configStr, "utf-8"));
 
@@ -196,6 +203,7 @@ export const backupFromPath = async (
       storagePath: getStorageLocation(),
     });
   }
+  await ipcRenderer.invoke("ai-cache-checkpoint", { close: false });
 
   const zip = new JSZipNode();
 
@@ -257,6 +265,13 @@ export const backupFromPath = async (
         { binary: true, createFolders: true }
       );
     }
+  }
+  const aiCachePath = path.join(dataPath, "config", "ai-cache.db");
+  if (fs.existsSync(aiCachePath)) {
+    zip.file("config/ai-cache.db", fs.readFileSync(aiCachePath), {
+      binary: true,
+      createFolders: true,
+    });
   }
 
   const destinationPath = path.join(targetPath, fileName);

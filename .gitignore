@@ -13,6 +13,20 @@
 
 dist/
 
+# Koodo Portable local state and credentials. These files must never be
+# committed: they can contain books, reading history, API keys or passwords.
+/.portable-data/
+/Koodo Portable Data/
+**/credentials.vault.json
+**/credentials.vault.json.*
+**/ai-cache.db
+**/ai-cache.db-shm
+**/ai-cache.db-wal
+*.pem
+*.p12
+*.key
+electron-builder.env.local
+
 /build/*
 /.vscode
 /.claude
