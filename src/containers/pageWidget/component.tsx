@@ -3,7 +3,7 @@ import "./pageWidget.css";
 import { PageWidgetProps, PageWidgetState } from "./interface";
 import { ConfigService } from "../../assets/lib/kookit-extra-browser.min";
 import { Trans } from "react-i18next";
-import { getBatchTrans, getWordDefinitions } from "../../utils/request/reader";
+import AiTaskService from "../../utils/ai/aiTaskService";
 import {
   detectLocalLanguage,
   getFullTranslationTarget,
@@ -135,73 +135,84 @@ class PageWidget extends React.Component<PageWidgetProps, PageWidgetState> {
   }
   async handleBatchTranslation(rendition) {
     const prev = this.batchTranslationLock;
-    const next = prev.then(async () => {
-      if (
-        !ConfigService.getAllListConfig("fullTranslationBooks").includes(
-          this.props.currentBook.key
-        ) ||
-        ConfigService.getReaderConfig("fullTranslationMode") === "no" ||
-        !this.props.isAuthed
-      ) {
-        return;
-      }
-
-      let batchTransTexts = await rendition.getBatchTransTexts();
-      if (batchTransTexts && batchTransTexts.length > 0) {
-        let res = await getBatchTrans(
-          batchTransTexts,
-          "Automatic",
-          getFullTranslationTarget()
-        );
-        if (res && res.data && res.data.texts) {
-          rendition.handleBatchTransResult(batchTransTexts, res.data.texts);
+    const next = prev
+      .then(async () => {
+        if (
+          !ConfigService.getAllListConfig("fullTranslationBooks").includes(
+            this.props.currentBook.key
+          ) ||
+          ConfigService.getReaderConfig("fullTranslationMode") === "no"
+        ) {
+          return;
         }
-      }
-    });
-    this.batchTranslationLock = next.catch(() => {});
+
+        let batchTransTexts = await rendition.getBatchTransTexts();
+        if (batchTransTexts && batchTransTexts.length > 0) {
+          const translations = await AiTaskService.translateBatch(
+            this.props.currentBook.key,
+            batchTransTexts,
+            getFullTranslationTarget()
+          );
+          rendition.handleBatchTransResult(batchTransTexts, translations);
+        }
+      })
+      .catch((error) => {
+        console.error("Full translation failed", error);
+        toast.error(this.props.t("Full translation failed"), {
+          id: "local-ai-full-translation",
+        });
+      });
+    this.batchTranslationLock = next;
     return next;
   }
   async handleWordDefinition(rendition) {
     const prev = this.batchTranslationLock;
-    const next = prev.then(async () => {
-      if (
-        !ConfigService.getAllListConfig("wordDefinitionBooks").includes(
-          this.props.currentBook.key
-        ) ||
-        !this.props.isAuthed
-      ) {
-        return;
-      }
-
-      let wordTexts = await rendition.audioText();
-      if (wordTexts && wordTexts.length > 0) {
-        let lang = detectLocalLanguage(wordTexts.slice(0, 500).join(" "));
-        if (lang === "ko") {
-          toast.error(
-            this.props.t(
-              "Unsupported language for word definition, currently only Chinese, Japanese and English are supported"
-            )
-          );
+    const next = prev
+      .then(async () => {
+        if (
+          !ConfigService.getAllListConfig("wordDefinitionBooks").includes(
+            this.props.currentBook.key
+          )
+        ) {
           return;
         }
-        let currentLevel =
-          lang === "zh"
-            ? ConfigService.getReaderConfig("currentChineseLevel") || "HSK3"
-            : lang === "ja"
-              ? ConfigService.getReaderConfig("currentJapaneseLevel") || "N3"
-              : ConfigService.getReaderConfig("currentEnglishLevel") || "四级";
-        let res = await getWordDefinitions(wordTexts, currentLevel, lang);
 
-        if (res && res.data && res.data.results) {
+        let wordTexts = await rendition.audioText();
+        if (wordTexts && wordTexts.length > 0) {
+          let lang = detectLocalLanguage(wordTexts.slice(0, 500).join(" "));
+          if (lang === "ko") {
+            toast.error(
+              this.props.t(
+                "Unsupported language for word definition, currently only Chinese, Japanese and English are supported"
+              )
+            );
+            return;
+          }
+          let currentLevel =
+            lang === "zh"
+              ? ConfigService.getReaderConfig("currentChineseLevel") || "HSK3"
+              : lang === "ja"
+                ? ConfigService.getReaderConfig("currentJapaneseLevel") || "N3"
+                : ConfigService.getReaderConfig("currentEnglishLevel") || "四级";
+          const definitions = await AiTaskService.defineWords(
+            wordTexts,
+            lang,
+            currentLevel
+          );
           rendition.handleWordDefinitionResult(
-            res.data.results,
+            definitions,
             lang,
             ConfigService.getReaderConfig("lang")
           );
         }
-      }
-    });
-    this.batchTranslationLock = next.catch(() => {});
+      })
+      .catch((error) => {
+        console.error("Word-definition analysis failed", error);
+        toast.error(this.props.t("Word definition failed"), {
+          id: "local-ai-word-definition",
+        });
+      });
+    this.batchTranslationLock = next;
     return next;
   }
   async handlePageNum(rendition) {

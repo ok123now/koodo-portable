@@ -9,9 +9,9 @@ import axios from "axios";
 import { Trans } from "react-i18next";
 import toast from "react-hot-toast";
 import { getDefaultTransTarget, openExternalUrl } from "../../../utils/common";
-import { getTransStream } from "../../../utils/request/reader";
 import { chatStream } from "../../../utils/request/common";
 import { getIframeDoc } from "../../../utils/reader/docUtil";
+import { resolveAiModelConfig } from "../../../utils/storage/credentialVault";
 declare var window: any;
 class PopupTrans extends React.Component<PopupTransProps, PopupTransState> {
   private textAccumulator: string = "";
@@ -146,7 +146,12 @@ class PopupTrans extends React.Component<PopupTransProps, PopupTransState> {
       );
       systemPrompt = systemPrompt.replace("{to}", targetLang);
       systemPrompt = systemPrompt.replace("{text}", text);
-      let config: any = plugin.config || {};
+      const config = await resolveAiModelConfig<any>(plugin.config || {});
+      if (!config.apiKey) {
+        this.setState({ isAddNew: true });
+        toast.error(this.props.t("Unlock the local credential vault to use this model"));
+        return;
+      }
       this.textAccumulator = "";
       this.startUpdateInterval();
       await chatStream(
@@ -168,45 +173,8 @@ class PopupTrans extends React.Component<PopupTransProps, PopupTransState> {
       this.stopUpdateInterval();
       this.textAccumulator = "";
       this.setState({ isFinishOutput: true });
-    } else if (
-      this.props.isAuthed &&
-      ConfigService.getReaderConfig("isDisableAI") !== "yes"
-    ) {
-      this.setState({
-        transService: "official-ai-trans-plugin",
-        isAddNew: false,
-      });
-      let plugin = this.props.plugins.find(
-        (item) => item.key === "official-ai-trans-plugin"
-      );
-      if (!plugin) {
-        return;
-      }
-      let targetLang =
-        ConfigService.getReaderConfig("transTarget") ||
-        getDefaultTransTarget(plugin.langList);
-      if (targetLang === "Traditional Chinese") {
-        targetLang = "繁体中文";
-      }
-      this.textAccumulator = "";
-      this.startUpdateInterval();
-      await getTransStream(
-        text,
-        ConfigService.getReaderConfig("transSource") || "Automatic",
-        ConfigService.getReaderConfig("transTarget") ||
-          getDefaultTransTarget(plugin.langList),
-        (result) => {
-          if (result && result.done) {
-            return;
-          }
-          if (result && result.text) {
-            this.textAccumulator += result.text;
-          }
-        }
-      );
-      this.stopUpdateInterval();
-      this.textAccumulator = "";
-      this.setState({ isFinishOutput: true });
+    } else {
+      this.setState({ isAddNew: true, isFinishOutput: true });
     }
   };
   handleChangeService(target: string) {

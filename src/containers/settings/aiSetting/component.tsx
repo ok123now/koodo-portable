@@ -7,6 +7,11 @@ import {
   ConfigService,
   KookitConfig,
 } from "../../../assets/lib/kookit-extra-browser.min";
+import {
+  deleteAiModelCredential,
+  getAiModelApiKey,
+  trySetAiModelCredential,
+} from "../../../utils/storage/credentialVault";
 
 class AISetting extends React.Component<SettingInfoProps, SettingInfoState> {
   constructor(props: SettingInfoProps) {
@@ -234,25 +239,26 @@ class AISetting extends React.Component<SettingInfoProps, SettingInfoState> {
       toast.error(this.props.t("Please fill in all required fields"));
       return;
     }
-    const provider = KookitConfig.AiProviderList.find(
-      (p) => p.id === selectedProvider
-    );
-    const config: AIModelConfig = {
-      endpoint,
-      modelName,
-      modelId,
-      apiKey,
-      providerId: selectedProvider || "custom",
-      providerName: provider ? provider.name : "Custom",
-    };
     const key = isEditing ? editingKey : Date.now().toString();
-    const modelEntry = {
-      key,
-      displayName: modelName,
-      config,
-    };
 
     try {
+      const provider = KookitConfig.AiProviderList.find(
+        (p) => p.id === selectedProvider
+      );
+      const credentialRef = await trySetAiModelCredential(key, apiKey);
+      const config: AIModelConfig = {
+        endpoint,
+        modelName,
+        modelId,
+        providerId: selectedProvider || "custom",
+        providerName: provider ? provider.name : "Custom",
+        ...(credentialRef ? { credentialRef } : { apiKey }),
+      };
+      const modelEntry = {
+        key,
+        displayName: modelName,
+        config,
+      };
       ConfigService.setObjectConfig(key, modelEntry, "aiModelConfig");
       toast.success(
         this.props.t(isEditing ? "Update successful" : "Addition successful")
@@ -264,8 +270,9 @@ class AISetting extends React.Component<SettingInfoProps, SettingInfoState> {
     }
   };
 
-  handleDelete = (key: string) => {
+  handleDelete = async (key: string) => {
     try {
+      await deleteAiModelCredential(key);
       ConfigService.deleteObjectConfig(key, "aiModelConfig");
       // 如果被删除的模型正被某个功能使用，则清空对应配置
       if (this.state.aiTranslateModel === key) {
@@ -287,7 +294,7 @@ class AISetting extends React.Component<SettingInfoProps, SettingInfoState> {
     this.props.handleFetchPlugins();
   };
 
-  handleEdit = (plugin: any) => {
+  handleEdit = async (plugin: any) => {
     const entry = ConfigService.getObjectConfig(
       plugin.key,
       "aiModelConfig",
@@ -300,6 +307,14 @@ class AISetting extends React.Component<SettingInfoProps, SettingInfoState> {
       toast.error(this.props.t("Failed to parse model configuration"));
       return;
     }
+    let apiKey = config.apiKey || "";
+    if (!apiKey && config.credentialRef) {
+      try {
+        apiKey = await getAiModelApiKey(config.credentialRef);
+      } catch {
+        toast.error(this.props.t("Unlock the local credential vault to edit this model"));
+      }
+    }
     this.setState({
       isAddNew: true,
       isEditing: true,
@@ -309,7 +324,7 @@ class AISetting extends React.Component<SettingInfoProps, SettingInfoState> {
       endpoint: config.endpoint || "",
       modelName: config.modelName || plugin.displayName || "",
       modelId: config.modelId || "",
-      apiKey: config.apiKey || "",
+      apiKey,
       testResult: "",
       fetchedModels: [],
     });

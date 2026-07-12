@@ -485,7 +485,6 @@ class FontSetting extends React.Component<SettingInfoProps, SettingInfoState> {
           )}
         </div>
 
-        {this.renderFeaturedSection()}
 
         <input
           ref={this.fileInputRef}

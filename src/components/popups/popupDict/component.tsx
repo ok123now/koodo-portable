@@ -18,14 +18,12 @@ import {
 } from "../../../utils/common";
 import toast from "react-hot-toast";
 import DatabaseService from "../../../utils/storage/databaseService";
-import {
-  getDictText,
-  getDictionaryStream,
-} from "../../../utils/request/reader";
 import { chatStream } from "../../../utils/request/common";
 import { marked } from "marked";
 import { getIframeDoc } from "../../../utils/reader/docUtil";
 import DictUtil from "../../../utils/file/dictUtil";
+import { lemmatizeEnglishText } from "../../../utils/text/lemmatize";
+import { resolveAiModelConfig } from "../../../utils/storage/credentialVault";
 declare var window: any;
 class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
   private aiTextAccumulator: string = "";
@@ -71,15 +69,15 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
     this.handleLookUp();
   }
   async handleLookUp() {
-    let originalText = this.props.originalText
+    const originalText = this.props.originalText
       .replace(/(\r\n|\n|\r)/gm, "")
       .replace(/-/gm, "");
+    const lookupText =
+      ConfigService.getReaderConfig("isLemmatizeWord") === "yes"
+        ? lemmatizeEnglishText(originalText)
+        : originalText;
     this.setState({ word: originalText });
-    // let prototype = "";
-    this.setState({ prototype: originalText });
-    if (ConfigService.getReaderConfig("isLemmatizeWord") === "yes") {
-      originalText = originalText;
-    }
+    this.setState({ prototype: lookupText });
     if (!this.state.dictService) {
       let pluginList = this.props.plugins.filter(
         (item) => item.type === "dictionary"
@@ -95,7 +93,7 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
         return;
       }
     }
-    const dictText = await this.handleDict(originalText);
+    const dictText = await this.handleDict(lookupText);
     this.handleRecordHistory(
       originalText,
       this.props.originalSentence || "",
@@ -124,7 +122,6 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
 
   handleDict = async (text: string): Promise<string> => {
     let dictText = "";
-    let isFullAnalysis = true;
     try {
       if (this.state.dictService === "custom-ai-dict-plugin") {
         this.setState({ isAddNew: false });
@@ -141,7 +138,12 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
           KookitConfig.DefaultPrompts.aiDict;
         systemPrompt = systemPrompt.replace("{word}", text);
         systemPrompt = systemPrompt.replace("{to}", targetLang);
-        let config: any = plugin.config || {};
+        const config = await resolveAiModelConfig<any>(plugin.config || {});
+        if (!config.apiKey) {
+          this.setState({ isAddNew: true, isAiWaiting: false });
+          toast.error(this.props.t("Unlock the local credential vault to use this model"));
+          return "";
+        }
         this.aiTextAccumulator = "";
         this.setState({ aiAnswer: "", isAiWaiting: true });
         this.startUpdateInterval();
@@ -200,25 +202,9 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
           this.props.t,
           plugin.config
         );
-      } else if (
-        this.props.isAuthed &&
-        ConfigService.getReaderConfig("isDisableAI") !== "yes"
-      ) {
-        this.setState({
-          dictService: "official-ai-dict-plugin",
-          isAddNew: false,
-        });
-        dictText = await getDictText(
-          text,
-          ConfigService.getReaderConfig("dictTarget") || "auto",
-          ConfigService.getReaderConfig("lang") &&
-            ConfigService.getReaderConfig("lang").startsWith("zh")
-            ? "chs"
-            : "eng"
-        );
-        if (dictText) {
-          isFullAnalysis = false;
-        }
+      } else {
+        this.setState({ isAddNew: true });
+        return "";
       }
 
       if (dictText.startsWith("https://")) {
@@ -245,13 +231,6 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
           }
         );
       }
-      if (
-        this.props.isAuthed &&
-        ConfigService.getReaderConfig("isDisableAI") !== "yes" &&
-        this.state.dictService === "official-ai-dict-plugin"
-      ) {
-        this.handleDictionaryStream(text, isFullAnalysis);
-      }
       return dictText;
     } catch (error) {
       toast.error(
@@ -264,38 +243,6 @@ class PopupDict extends React.Component<PopupDictProps, PopupDictState> {
         dictText: this.props.t("Error happened"),
       });
       return "";
-    }
-  };
-  handleDictionaryStream = async (text: string, isFullAnalysis: boolean) => {
-    try {
-      this.aiTextAccumulator = "";
-      this.setState({ aiAnswer: "", isAiWaiting: true });
-      this.startUpdateInterval();
-      let res = await getDictionaryStream(
-        text,
-        "auto",
-        getFullTranslationTarget(),
-        this.props.originalSentence,
-        isFullAnalysis,
-        (result) => {
-          if (result && result.text) {
-            if (!this.aiTextAccumulator) {
-              this.setState({ isAiWaiting: false });
-            }
-            this.aiTextAccumulator += result.text;
-          }
-        }
-      );
-      this.stopUpdateInterval();
-      this.aiTextAccumulator = "";
-      if (res && res.done) {
-        this.setState({ isAiWaiting: false });
-      }
-    } catch (error) {
-      this.stopUpdateInterval();
-      this.aiTextAccumulator = "";
-      this.setState({ isAiWaiting: false });
-      console.error(error);
     }
   };
   handleChangeDictService = (dictService: string) => {

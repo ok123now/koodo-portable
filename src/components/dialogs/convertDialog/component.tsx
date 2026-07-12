@@ -12,7 +12,6 @@ import {
   paraSpacingList,
   titleSizeList,
 } from "../../../constants/dropdownList";
-import toast from "react-hot-toast";
 
 class ConvertDialog extends React.Component<
   ConvertDialogProps,
@@ -151,17 +150,6 @@ class ConvertDialog extends React.Component<
                     : "system-ocr")
                 }
                 onChange={(event) => {
-                  if (
-                    event.target.value === "official-ai-ocr" &&
-                    !this.props.isAuthed
-                  ) {
-                    toast(
-                      this.props.t("Please upgrade to Pro to use this feature")
-                    );
-                    this.props.handleSetting(true);
-                    this.props.handleSettingMode("account");
-                    return;
-                  }
                   ConfigService.setReaderConfig(
                     this.props.currentBook.description.indexOf("scanned") > -1
                       ? "scannedOcrEngine"
@@ -200,7 +188,10 @@ class ConvertDialog extends React.Component<
               >
                 {ocrEngineList
                   .filter((item) => {
-                    if (!isElectron && item.value === "mineru-official-agent") {
+                    if (
+                      item.value === "official-ai-ocr" ||
+                      item.value === "mineru-official-agent"
+                    ) {
                       return false;
                     }
                     if (

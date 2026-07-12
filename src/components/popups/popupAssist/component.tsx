@@ -11,10 +11,11 @@ import { Trans } from "react-i18next";
 import { handleContextMenu } from "../../../utils/common";
 import toast from "react-hot-toast";
 import { saveAs } from "file-saver";
-import { getAnswerStream } from "../../../utils/request/reader";
 import { chatStream } from "../../../utils/request/common";
 import { marked } from "marked";
 import { sampleQuestion } from "../../../constants/settingList";
+import { resolveAiModelConfig } from "../../../utils/storage/credentialVault";
+import AiTaskService from "../../../utils/ai/aiTaskService";
 class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
   chatBoxRef: React.RefObject<HTMLDivElement>;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
@@ -229,8 +230,7 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
       (!this.state.aiService ||
         this.props.plugins.findIndex(
           (item) => item.key === this.state.aiService
-        ) === -1) &&
-      !this.props.isAuthed
+        ) === -1)
     ) {
       this.setState({ isAddNew: true });
     }
@@ -256,7 +256,12 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
         } else {
           systemPrompt = systemPrompt.replace("{text}", "");
         }
-        let config: any = plugin.config || {};
+        const config = await resolveAiModelConfig<any>(plugin.config || {});
+        if (!config.apiKey) {
+          this.setState({ isAddNew: true, isWaiting: false });
+          toast.error(this.props.t("Unlock the local credential vault to use this model"));
+          return;
+        }
         let chatHistory =
           this.state.mode === "ask"
             ? this.state.askHistory
@@ -316,70 +321,8 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
         if (ConfigService.getReaderConfig("isManualScroll") !== "yes") {
           this.scrollToBottom();
         }
-      } else if (
-        this.state.aiService &&
-        this.state.aiService !== "official-ai-assistant-plugin"
-      ) {
-      } else if (this.props.isAuthed) {
-        let plugin = this.props.plugins.find(
-          (item) => item.key === "official-ai-assistant-plugin"
-        );
-        if (!plugin) {
-          return;
-        }
-        this.answerTextAccumulator = "";
-        this.startUpdateInterval();
-        let res = await getAnswerStream(
-          text,
-          this.state.question,
-          this.state.mode === "ask"
-            ? this.state.askHistory
-            : this.state.chatHistory,
-          this.state.mode,
-          (result) => {
-            if (result && result.text) {
-              if (!this.answerTextAccumulator) {
-                this.setState({ isWaiting: false });
-              }
-              this.answerTextAccumulator += result.text;
-            }
-          }
-        );
-        this.stopUpdateInterval(this.answerTextAccumulator);
-        const finalAnswer = this.answerTextAccumulator;
-        this.answerTextAccumulator = "";
-        if (res.data && res.done) {
-          if (this.state.mode === "ask") {
-            this.setState({
-              askHistory: [
-                ...this.state.askHistory,
-                {
-                  role: "assistant",
-                  content: finalAnswer,
-                },
-              ],
-              answer: "",
-              question: "",
-              isWaiting: false,
-            });
-          } else {
-            this.setState({
-              chatHistory: [
-                ...this.state.chatHistory,
-                {
-                  role: "assistant",
-                  content: finalAnswer,
-                },
-              ],
-              answer: "",
-              question: "",
-              isWaiting: false,
-            });
-          }
-        }
-        if (ConfigService.getReaderConfig("isManualScroll") !== "yes") {
-          this.scrollToBottom();
-        }
+      } else {
+        this.setState({ isAddNew: true, isWaiting: false });
       }
     } catch (error) {
       toast.error(
@@ -508,6 +451,41 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
         this.scrollToBottom();
       }
     }, 100);
+  };
+  handleChapterTask = async (mode: "summary" | "outline") => {
+    const text = (this.props.originalText || "").trim();
+    if (!text || this.state.isWaiting) return;
+    const label = mode === "summary" ? "Summarize this chapter" : "Generate chapter outline";
+    const userMessage: AiChatMessage = {
+      role: "user",
+      content: this.props.t(label),
+    };
+    this.setState({
+      askHistory: [...this.state.askHistory, userMessage],
+      isWaiting: true,
+      answer: "",
+    });
+    try {
+      const content = await AiTaskService.summarize(
+        this.props.currentBook?.key || "unknown-book",
+        text,
+        mode
+      );
+      this.setState((state) => ({
+        askHistory: [
+          ...state.askHistory,
+          { role: "assistant", content },
+        ],
+        isWaiting: false,
+      }));
+    } catch (error) {
+      toast.error(
+        this.props.t("Error happened") +
+          ": " +
+          (error instanceof Error ? error.message : String(error))
+      );
+      this.setState({ isWaiting: false });
+    }
   };
   render() {
     return (
@@ -723,6 +701,22 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
                 }}
               >
                 <div className="popup-assist-shortcut-container">
+                  {this.state.mode === "ask" && (
+                    <>
+                      <div
+                        className="popup-assist-shortcut"
+                        onClick={() => this.handleChapterTask("summary")}
+                      >
+                        {"📝 " + this.props.t("Summarize this chapter")}
+                      </div>
+                      <div
+                        className="popup-assist-shortcut"
+                        onClick={() => this.handleChapterTask("outline")}
+                      >
+                        {"🧭 " + this.props.t("Generate chapter outline")}
+                      </div>
+                    </>
+                  )}
                   {sampleQuestion
                     .filter((item) => item.mode === this.state.mode)
                     .map((item) => {

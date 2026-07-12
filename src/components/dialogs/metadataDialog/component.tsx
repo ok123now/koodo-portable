@@ -7,8 +7,7 @@ import {
   MetadataResult,
   BookResultItem,
 } from "./interface";
-import toast from "react-hot-toast";
-import { getBookMetadata } from "../../../utils/request/reader";
+import { searchBookMetadata } from "../../../utils/metadata/bookMetadata";
 
 class MetadataDialog extends React.Component<
   MetadataDialogProps,
@@ -36,13 +35,6 @@ class MetadataDialog extends React.Component<
     const { searchName, searchAuthor } = this.state;
     if (!searchName.trim() && !searchAuthor.trim()) return;
 
-    if (!this.props.isAuthed) {
-      toast(this.props.t("Please upgrade to Pro to use this feature"));
-      this.props.handleSetting(true);
-      this.props.handleSettingMode("account");
-      return;
-    }
-
     this.setState({
       isLoading: true,
       error: "",
@@ -51,20 +43,13 @@ class MetadataDialog extends React.Component<
     });
 
     try {
-      const res = await getBookMetadata(searchName, searchAuthor);
-      if (res && res.code === 200 && res.data) {
-        const data = res.data as BookResultItem[];
-
-        this.setState({ results: data, isLoading: false });
-      } else if (res && res.code === 200 && !res.data) {
-        this.setState({
-          isLoading: false,
-          error: this.props.t("No metadata found"),
-        });
+      const data = await searchBookMetadata(searchName, searchAuthor);
+      if (data.length) {
+        this.setState({ results: data as BookResultItem[], isLoading: false });
       } else {
         this.setState({
           isLoading: false,
-          error: this.props.t("Failed to fetch metadata"),
+          error: this.props.t("No metadata found"),
         });
       }
     } catch {
@@ -167,7 +152,8 @@ class MetadataDialog extends React.Component<
               const author = item.author;
               const publisher = item.publisher || "";
               const description = item.description || "";
-              const source = "Cloud";
+              const source =
+                item.source === "openlibrary" ? "Open Library" : "Google Books";
               return (
                 <div
                   key={id}

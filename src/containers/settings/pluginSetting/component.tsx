@@ -1,8 +1,6 @@
 import React from "react";
 import { SettingInfoProps, SettingInfoState } from "./interface";
 import { Trans } from "react-i18next";
-import _ from "underscore";
-
 import toast from "react-hot-toast";
 import {
   checkPlugin,
@@ -34,9 +32,7 @@ class SettingDialog extends React.Component<
       activePluginTab: "translation",
     };
   }
-  componentDidMount() {
-    this.handleGetPluginList();
-  }
+  componentDidMount() {}
   handleGetPluginList = async () => {
     let plugins = await getPluginList();
     if (plugins) {
@@ -160,22 +156,6 @@ class SettingDialog extends React.Component<
                 >
                   <Trans>Cancel</Trans>
                 </div>
-                <div
-                  className="voice-add-cancel"
-                  style={{ marginRight: "10px" }}
-                  onClick={() => {
-                    if (
-                      ConfigService.getReaderConfig("lang") &&
-                      ConfigService.getReaderConfig("lang").startsWith("zh")
-                    ) {
-                      openExternalUrl(getWebsiteUrl() + "/zh/plugin");
-                    } else {
-                      openExternalUrl(getWebsiteUrl() + "/en/plugin");
-                    }
-                  }}
-                >
-                  <Trans>Document</Trans>
-                </div>
               </div>
             </div>
           </div>
@@ -201,7 +181,9 @@ class SettingDialog extends React.Component<
 
         {this.props.plugins &&
           this.props.plugins
-            .filter((item) => item.type !== "ai")
+            .filter(
+              (item) => item.type !== "ai" && !item.key.startsWith("official-")
+            )
             .map((item) => {
               return (
                 <div className="setting-dialog-new-title" key={item.key}>
@@ -245,6 +227,7 @@ class SettingDialog extends React.Component<
             })}
         <div
           style={{
+            display: "none",
             fontWeight: "bold",
             textAlign: "left",
             marginBottom: "20px",
@@ -261,7 +244,7 @@ class SettingDialog extends React.Component<
             <Trans>Plugin market</Trans>
           </span>
         </div>
-        <div className="plugin-tab-bar">
+        <div className="plugin-tab-bar" style={{ display: "none" }}>
           {(["translation", "dictionary", "voice"] as const).map((type) => {
             const labelMap: Record<string, string> = {
               translation: this.props.t("Translation"),
@@ -300,7 +283,7 @@ class SettingDialog extends React.Component<
             );
           })}
         </div>
-        {this.state.availablePlugins &&
+        {false && this.state.availablePlugins &&
           this.state.availablePlugins.map((item: any, index: number) => {
             const isExpanded =
               this.state.expandedPluginKey === item.plugin.identifier;
@@ -515,41 +498,7 @@ class SettingDialog extends React.Component<
 
         <div className="setting-dialog-new-plugin">
           <span
-            style={{ textDecoration: "underline", marginRight: "20px" }}
-            onClick={() => {
-              if (
-                ConfigService.getReaderConfig("lang") &&
-                ConfigService.getReaderConfig("lang").startsWith("zh")
-              ) {
-                openExternalUrl(getWebsiteUrl() + "/zh/plugin");
-              } else {
-                openExternalUrl(getWebsiteUrl() + "/en/plugin");
-              }
-            }}
-          >
-            <Trans>Visit online version</Trans>
-          </span>
-          <span
-            style={{ textDecoration: "underline" }}
-            onClick={() => {
-              if (
-                ConfigService.getReaderConfig("lang") &&
-                ConfigService.getReaderConfig("lang").startsWith("zh")
-              ) {
-                openExternalUrl(
-                  "https://github.com/koodo-reader/plugins/blob/main/README_CN.md"
-                );
-              } else {
-                openExternalUrl(
-                  "https://github.com/koodo-reader/plugins/blob/main/README.md"
-                );
-              }
-            }}
-          >
-            <Trans>How to custom plugin</Trans>
-          </span>
-          <span
-            style={{ marginLeft: "20px", fontWeight: "bold" }}
+            style={{ fontWeight: "bold" }}
             onClick={async () => {
               const infoEl = document.querySelector(".setting-dialog-info");
               this.setState({ isAddNew: true }, () => {

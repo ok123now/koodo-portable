@@ -25,7 +25,7 @@ export interface CloudBookItem {
   publisher?: string;
   description?: string;
   cover?: string;
-  source: "cloud";
+  source: "openlibrary" | "googlebooks";
 }
 
 export type BookResultItem = CloudBookItem;

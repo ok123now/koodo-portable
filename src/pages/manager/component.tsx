@@ -29,6 +29,11 @@ import {
 } from "../../utils/reader/bookDrag";
 import Footer from "../../components/footer";
 import ProtectionOverlay from "../../components/protection";
+import {
+  vexComfirmAsync,
+  vexPasswordInputAsync,
+  vexSelectAsync,
+} from "../../utils/common";
 class Manager extends React.Component<ManagerProps, ManagerState> {
   timer!: NodeJS.Timeout;
   private isDraggingFromApp = false;
@@ -73,7 +78,7 @@ class Manager extends React.Component<ManagerProps, ManagerState> {
       });
     }
   }
-  UNSAFE_componentWillMount() {
+  handleLoadLibrary = () => {
     this.props.handleFetchBooks();
     this.props.handleFetchPlugins();
     this.props.handleFetchNotes();
@@ -81,8 +86,97 @@ class Manager extends React.Component<ManagerProps, ManagerState> {
     this.props.handleFetchBookSortCode();
     this.props.handleFetchNoteSortCode();
     this.props.handleFetchViewMode();
-  }
-  componentDidMount() {
+  };
+  handlePortableStartup = async (): Promise<boolean> => {
+    const electron = (window as any).require?.("electron");
+    if (!electron) return false;
+    const ipcRenderer = electron.ipcRenderer;
+    try {
+      if (ConfigService.getReaderConfig("portableMigrationPrompted") !== "yes") {
+        const status = await ipcRenderer.invoke("portable-migration-status");
+        if (status?.target?.empty && status?.sources?.length) {
+          const shouldMigrate = await vexComfirmAsync(
+            "An official Koodo library was found. Copy it into Koodo Portable? The original library will remain unchanged."
+          );
+          if (!shouldMigrate) {
+            ConfigService.setReaderConfig("portableMigrationPrompted", "yes");
+          }
+          if (shouldMigrate) {
+            let sourceId = await vexSelectAsync(
+              "Select the official Koodo library to migrate",
+              [
+                ...status.sources.map((source: any) => ({
+                  value: source.id,
+                  label: `${source.libraryPath} (${source.bookCount ?? "?"} books)`,
+                })),
+                {
+                  value: "pick-folder",
+                  label: "Choose another Koodo library folder...",
+                },
+              ]
+            );
+            if (sourceId === "pick-folder") {
+              const picked = await ipcRenderer.invoke(
+                "portable-migration-pick-source"
+              );
+              sourceId = picked?.source?.id || false;
+            }
+            if (sourceId) {
+              const vaultStatus = await ipcRenderer.invoke(
+                "credential-vault-status"
+              );
+              if (!vaultStatus?.unlocked) {
+                const passphrase = await vexPasswordInputAsync(
+                  vaultStatus?.exists
+                    ? "Enter the Koodo Portable master password to migrate AI keys"
+                    : "Create a Koodo Portable master password for migrated API keys",
+                  vaultStatus?.exists ? undefined : "Confirm the master password"
+                );
+                if (!passphrase) return false;
+                await ipcRenderer.invoke("credential-vault-unlock", {
+                  passphrase,
+                });
+              }
+              const migration = await ipcRenderer.invoke("portable-migration-migrate", {
+                sourceId,
+                dryRun: false,
+              });
+              for (const [key, value] of Object.entries(
+                migration?.rendererConfig || {}
+              )) {
+                if (typeof value === "string") ConfigService.setItem(key, value);
+              }
+              ConfigService.setReaderConfig("portableMigrationPrompted", "yes");
+              toast.success(this.props.t("Migration successful. Restarting the app"));
+              await ipcRenderer.invoke("reload-main", "portable-migration");
+              return true;
+            }
+          }
+        }
+      }
+
+      const vault = await ipcRenderer.invoke("credential-vault-status");
+      if (vault?.exists && !vault?.unlocked) {
+        const passphrase = await vexPasswordInputAsync(
+          "Enter the Koodo Portable master password to unlock API and sync credentials"
+        );
+        if (passphrase) {
+          await ipcRenderer.invoke("credential-vault-unlock", { passphrase });
+        }
+      }
+    } catch (error) {
+      console.error("Portable startup failed", error);
+      toast.error(
+        this.props.t("Portable startup failed") +
+          ": " +
+          (error instanceof Error ? error.message : String(error))
+      );
+    }
+    return false;
+  };
+  async componentDidMount() {
+    if (await this.handlePortableStartup()) return;
+    this.handleLoadLibrary();
     this.props.handleReadingState(false);
     document.addEventListener("dragstart", this.handleDocumentDragStart, true);
     document.addEventListener("dragend", this.handleDocumentDragEnd, true);
@@ -244,10 +338,8 @@ class Manager extends React.Component<ManagerProps, ManagerState> {
             this.props.handleAddDialog(false);
             this.props.handleDetailDialog(false);
             this.props.handleLoadingDialog(false);
-            if (!this.props.isAuthed) {
-              this.props.handleNewDialog(false);
-              this.props.handleShowSupport(false);
-            }
+            this.props.handleNewDialog(false);
+            this.props.handleShowSupport(false);
             this.props.handleLocalFileDialog(false);
             this.props.handleImportDialog(false);
             this.props.handleShowPopupNote(false);
