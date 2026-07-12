@@ -15,6 +15,9 @@ concurrency:
 env:
   NODE_VERSION: "22"
   YARN_VERSION: "1.22.22"
+  # Hard-linking Electron resources can make duplicate file-association icons
+  # collide on GitHub's clean macOS runner.
+  USE_HARD_LINKS: "false"
 
 jobs:
   validate:
