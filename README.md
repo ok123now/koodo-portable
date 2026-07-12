@@ -57,6 +57,26 @@ Build the portable distribution targets:
 yarn release:portable
 ```
 
+## Verifying official fork releases
+
+Release DMGs and EXEs are built from version tags on standard GitHub-hosted
+runners. The release workflow generates GitHub Artifact Attestations for both
+binaries and the SHA-256 manifest. Local build output is never uploaded as an
+official release artifact.
+
+Verify a downloaded binary with:
+
+```sh
+gh attestation verify "Koodo Portable-2.4.0-arm64-Portable.dmg" \
+  --repo ok123now/koodo-portable \
+  --signer-workflow \
+  ok123now/koodo-portable/.github/workflows/release-portable.yml \
+  --deny-self-hosted-runners
+```
+
+For a particular release, also require its tag with `--source-ref`, for
+example `--source-ref refs/tags/v2.4.0-portable.1`.
+
 Personal macOS builds are unsigned. On first launch, right-click the app and
 choose **Open**.
 

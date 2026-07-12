@@ -115,6 +115,7 @@
     "release": "electron-builder --publish never",
     "release:portable": "electron-builder --mac dmg zip --win portable --publish never",
     "release:mac": "electron-builder --mac dmg --publish never",
+    "release:win": "electron-builder --win portable --x64 --publish never",
     "prerelease": "react-scripts build",
     "postinstall": "node scripts/patch-nan.js && electron-builder install-app-deps",
     "rebuild": "electron-rebuild -f -w better-sqlite3"
