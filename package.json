@@ -260,7 +260,7 @@
       ],
       "icon": "assets/icons/icon.icns",
       "category": "public.app-category.productivity",
-      "artifactName": "${productName}-${version}-${arch}-Portable.${ext}"
+      "artifactName": "Koodo-Portable-${version}-${arch}-Portable.${ext}"
     },
     "win": {
       "target": [
@@ -286,7 +286,7 @@
         }
       ],
       "icon": "assets/icons/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}-Win-Portable.${ext}"
+      "artifactName": "Koodo-Portable-${version}-${arch}-Win-Portable.${ext}"
     },
     "linux": {
       "icon": "assets/icons",
@@ -317,13 +317,13 @@
           ]
         }
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "Koodo-Portable-${version}-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-${arch}-Portable.${ext}"
+      "artifactName": "Koodo-Portable-${version}-${arch}-Portable.${ext}"
     },
     "nsis": {
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "artifactName": "Koodo-Portable-${version}-${arch}.${ext}",
       "oneClick": true,
       "allowToChangeInstallationDirectory": false,
       "buildUniversalInstaller": false,

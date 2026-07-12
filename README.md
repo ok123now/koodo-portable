@@ -67,7 +67,7 @@ official release artifact.
 Verify a downloaded binary with:
 
 ```sh
-gh attestation verify "Koodo Portable-2.4.0-arm64-Portable.dmg" \
+gh attestation verify "Koodo-Portable-2.4.0-arm64-Portable.dmg" \
   --repo ok123now/koodo-portable \
   --signer-workflow \
   ok123now/koodo-portable/.github/workflows/release-portable.yml \
